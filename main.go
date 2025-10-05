@@ -375,7 +375,7 @@ func (a *App) drawFileList() {
 // Отрисовка редактора
 func (a *App) drawEditor() {
     // Заголовок правой панели
-    title := "Editor"
+    title := "  Editor"
     if a.mode == "preview" {
         title = "Preview"
     }
