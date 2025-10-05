@@ -8,6 +8,7 @@ import (
     "strings"
 
     "github.com/gdamore/tcell/v2"
+    "github.com/mattn/go-runewidth"
 )
 
 // Структура для хранения информации о файле
@@ -266,6 +267,21 @@ func (a *App) clampCursor() {
     }
 }
 
+// helper: display column (in cells) of rune index (sum widths of runes[0:upto])
+func runesDisplayWidth(runes []rune, upto int) int {
+    if upto <= 0 {
+        return 0
+    }
+    if upto > len(runes) {
+        upto = len(runes)
+    }
+    w := 0
+    for i := 0; i < upto; i++ {
+        w += runewidth.RuneWidth(runes[i])
+    }
+    return w
+}
+
 // Обеспечить видимость курсора (корректирует scrollX/Y)
 func (a *App) ensureCursorVisible() {
     a.width, a.height = a.screen.Size()
@@ -278,16 +294,44 @@ func (a *App) ensureCursorVisible() {
         editorHeight = 1
     }
 
+    // вертикальная прокрутка (в строках)
     if a.editY < a.scrollY {
         a.scrollY = a.editY
     } else if a.editY >= a.scrollY+editorHeight {
         a.scrollY = a.editY - editorHeight + 1
     }
 
-    if a.editX < a.scrollX {
+    // горизонтальная прокрутка: нужно учитывать реальную ширину рун в текущей строке
+    lines := a.getLines()
+    if a.editY < 0 || a.editY >= len(lines) {
+        // защита
+        if a.scrollX < 0 {
+            a.scrollX = 0
+        }
+        return
+    }
+    line := lines[a.editY]
+    runes := []rune(line)
+
+    // текущее отображаемое смещение в колонках (cells)
+    cursorDisp := runesDisplayWidth(runes, a.editX)
+    scrollDisp := runesDisplayWidth(runes, a.scrollX)
+
+    if cursorDisp < scrollDisp {
+        // смещаем scrollX в rune-индекс равный editX
         a.scrollX = a.editX
-    } else if a.editX >= a.scrollX+editorWidth {
-        a.scrollX = a.editX - editorWidth + 1
+    } else if cursorDisp >= scrollDisp+editorWidth {
+        // нужно подобрать новое scrollX (rune-индекс) так, чтобы курсор поместился
+        // минимально уменьшаем scrollX
+        newScroll := a.editX
+        // двигаемся назад, пока отображаемая ширина от newScroll до editX больше нужной
+        for newScroll > 0 {
+            if runesDisplayWidth(runes, newScroll) <= cursorDisp-editorWidth+1 {
+                break
+            }
+            newScroll--
+        }
+        a.scrollX = newScroll
     }
 
     if a.scrollY < 0 {
@@ -326,10 +370,14 @@ func (a *App) drawFileList() {
 
     // Заголовок
     title := "Files"
-    for i, r := range title {
-        if i < a.leftWidth-2 {
-            a.screen.SetContent(i+1, 0, r, nil, tcell.StyleDefault.Foreground(tcell.ColorRed).Bold(true))
+    col := 0
+    for _, r := range title {
+        w := runewidth.RuneWidth(r)
+        if col >= a.leftWidth-2 {
+            break
         }
+        a.screen.SetContent(col+1, 0, r, nil, tcell.StyleDefault.Foreground(tcell.ColorRed).Bold(true))
+        col += w
     }
 
     // Список файлов
@@ -359,15 +407,18 @@ func (a *App) drawFileList() {
             style = style.Foreground(tcell.ColorBlue)
         }
 
-        // Обрезаем имя если слишком длинное
-        if len(name) > a.leftWidth-2 {
-            name = name[:a.leftWidth-5] + "..."
-        }
+        // Обрезаем имя если слишком длинное (учитываем видимую ширину)
+        maxCols := a.leftWidth - 2
+        displayName := runewidth.Truncate(name, maxCols, "...")
 
-        for j, r := range name {
-            if j < a.leftWidth-2 {
-                a.screen.SetContent(j+1, y, r, nil, style)
+        col := 0
+        for _, r := range displayName {
+            w := runewidth.RuneWidth(r)
+            if col >= maxCols {
+                break
             }
+            a.screen.SetContent(col+1, y, r, nil, style)
+            col += w
         }
     }
 }
@@ -377,13 +428,21 @@ func (a *App) drawEditor() {
     // Заголовок правой панели
     title := "  Editor"
     if a.mode == "preview" {
-        title = "Preview"
+        title = "  Preview"
     }
 
-    for i, r := range title {
-        if i < a.width-a.leftWidth-2 {
-            a.screen.SetContent(a.leftWidth+1+i, 0, r, nil, tcell.StyleDefault.Foreground(tcell.ColorGreen).Bold(true))
+    maxTitleCols := a.width - a.leftWidth - 2
+    if maxTitleCols < 0 {
+        maxTitleCols = 0
+    }
+    col := 0
+    for _, r := range title {
+        w := runewidth.RuneWidth(r)
+        if col >= maxTitleCols {
+            break
         }
+        a.screen.SetContent(a.leftWidth+1+col, 0, r, nil, tcell.StyleDefault.Foreground(tcell.ColorGreen).Bold(true))
+        col += w
     }
 
     if a.mode == "edit" {
@@ -419,7 +478,9 @@ func (a *App) drawTextEditor() {
             // Если курсор находится на пустой строке после текста
             if a.activePanel == "right" && lineIdx == a.editY {
                 // Корректируем положение курсора с учетом отступа
-                cursorX := startX + a.editX - a.scrollX 
+                // для пустой строки под вычисление используем нулевую ширину
+                cursorCol := 0 - runesDisplayWidth([]rune(""), a.scrollX) // фактически 0
+                cursorX := startX + cursorCol
                 cursorY := y
                 // Если курсор на пустой строке, но не в первой позиции, нарисуем курсор-пробел
                 if cursorX >= startX && cursorX < startX+editorWidth && cursorY == y {
@@ -431,11 +492,16 @@ func (a *App) drawTextEditor() {
         line := lines[lineIdx]
         runes := []rune(line)
         col := 0
+        // Итерируем по runes, начиная с rune-индекса scrollX
         for k := a.scrollX; k < len(runes); k++ { // Итерируем по всем rune
             if col >= editorWidth { // Если достигли края экрана, прекращаем отрисовку строки (было ==, лучше >=)
                 break
             }
             r := runes[k]
+            w := runewidth.RuneWidth(r)
+            if col+w > editorWidth {
+                break
+            }
             style := tcell.StyleDefault
 
             // Если это активный курсор, инвертируем цвет текущего символа
@@ -444,13 +510,16 @@ func (a *App) drawTextEditor() {
             }
             // Здесь startX уже содержит textEditorPadding
             a.screen.SetContent(startX+col, y, r, nil, style)
-            col++
+            col += w
         }
 
         // Если курсор находится в конце строки (после последнего символа)
         if a.activePanel == "right" && lineIdx == a.editY && a.editX == len(runes) {
             // Корректируем положение курсора с учетом отступа
-            cursorX := startX + a.editX - a.scrollX 
+            // вычисляем дисплей-колонку курсора и курсора прокрутки
+            cursorDisp := runesDisplayWidth(runes, a.editX)
+            scrollDisp := runesDisplayWidth(runes, a.scrollX)
+            cursorX := startX + (cursorDisp - scrollDisp)
             if cursorX >= startX && cursorX < startX+editorWidth {
                 a.screen.SetContent(cursorX, y, ' ', nil, tcell.StyleDefault.Background(tcell.ColorWhite).Foreground(tcell.ColorBlack)) // рисуем инвертированный пробел
             }
@@ -571,12 +640,13 @@ func (a *App) drawPreview() {
                         // render the text between idx+1 .. closeIdx-1 as link text
                         linkText := runes[idx+1 : closeIdx]
                         for _, lr := range linkText {
-                            if col >= editorWidth {
+                            w := runewidth.RuneWidth(lr)
+                            if col+w > editorWidth {
                                 break
                             }
                             linkStyle := baseStyle.Foreground(tcell.ColorLightBlue).Underline(true)
                             a.screen.SetContent(startX+col, y, lr, nil, linkStyle)
-                            col++
+                            col += w
                         }
                         // advance idx to parenClose (skip url)
                         idx = parenClose
@@ -598,8 +668,12 @@ func (a *App) drawPreview() {
                 curStyle = tcell.StyleDefault.Foreground(tcell.ColorLightGrey).Bold(true)
             }
 
+            w := runewidth.RuneWidth(r)
+            if col+w > editorWidth {
+                break
+            }
             a.screen.SetContent(startX+col, y, r, nil, curStyle)
-            col++
+            col += w
         }
     }
 
@@ -619,14 +693,20 @@ func (a *App) drawStatus() {
 
     status := fmt.Sprintf("Panel: %s   | Mode: %s    | File: %s", a.activePanel, a.mode, filepath.Base(a.currentFile))
 
-    for i, r := range status {
-        if i < a.width {
-            style := tcell.StyleDefault.Foreground(tcell.ColorGray)
-            if i >= 7 && i < 7+len(a.activePanel) {
-                style = style.Foreground(panelColor).Bold(true)
-            }
-            a.screen.SetContent(i, y, r, nil, style)
+    col := 0
+    panelStart := runewidth.StringWidth("Panel: ")
+    activePanelWidth := runewidth.StringWidth(a.activePanel)
+    for _, r := range status {
+        w := runewidth.RuneWidth(r)
+        if col >= a.width {
+            break
         }
+        style := tcell.StyleDefault.Foreground(tcell.ColorGray)
+        if col >= panelStart && col < panelStart+activePanelWidth {
+            style = style.Foreground(panelColor).Bold(true)
+        }
+        a.screen.SetContent(col, y, r, nil, style)
+        col += w
     }
 }
 
