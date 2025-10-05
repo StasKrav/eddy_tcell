@@ -608,12 +608,12 @@ func (a *App) drawStatus() {
         panelColor = tcell.ColorGreen
     }
 
-    status := fmt.Sprintf("Pane: %s | Mode: %s | File: %s", a.activePanel, a.mode, filepath.Base(a.currentFile))
+    status := fmt.Sprintf("Panel: %s   | Mode: %s    | File: %s", a.activePanel, a.mode, filepath.Base(a.currentFile))
 
     for i, r := range status {
         if i < a.width {
             style := tcell.StyleDefault.Foreground(tcell.ColorGray)
-            if i >= 6 && i < 6+len(a.activePanel) {
+            if i >= 7 && i < 7+len(a.activePanel) {
                 style = style.Foreground(panelColor).Bold(true)
             }
             a.screen.SetContent(i, y, r, nil, style)
@@ -623,6 +623,103 @@ func (a *App) drawStatus() {
 
 // Обработка событий клавиатуры
 func (a *App) handleKey(ev *tcell.EventKey) {
+    // Вспомогательные обработчики для Backspace и Delete
+    doBackspace := func() {
+        if a.activePanel != "right" || a.mode != "edit" {
+            return
+        }
+        lines := a.getLines()
+        // защита
+        if len(lines) == 0 {
+            a.setLines([]string{""})
+            a.editX = 0
+            a.editY = 0
+            a.ensureCursorVisible()
+            return
+        }
+        line := lines[a.editY]
+        runes := []rune(line)
+        if a.editX > 0 {
+            // удалить rune слева от курсора
+            if a.editX <= len(runes) {
+                newRunes := append(runes[:a.editX-1], runes[a.editX:]...)
+                lines[a.editY] = string(newRunes)
+                a.setLines(lines)
+                a.editX--
+            }
+        } else {
+            // если в начале строки — объединить с предыдущей
+            if a.editY > 0 {
+                prev := lines[a.editY-1]
+                lines[a.editY-1] = prev + line
+                // удалить текущую строку
+                newLines := append([]string{}, lines[:a.editY]...)
+                if a.editY+1 <= len(lines)-1 {
+                    newLines = append(newLines, lines[a.editY+1:]...)
+                }
+                a.setLines(newLines)
+                a.editY--
+                a.editX = len([]rune(prev))
+            }
+        }
+        a.ensureCursorVisible()
+    }
+
+    doDelete := func() {
+        if a.activePanel != "right" || a.mode != "edit" {
+            return
+        }
+        lines := a.getLines()
+        if len(lines) == 0 {
+            return
+        }
+        line := lines[a.editY]
+        runes := []rune(line)
+        if a.editX < len(runes) {
+            // удалить текущий rune
+            newRunes := append(runes[:a.editX], runes[a.editX+1:]...)
+            lines[a.editY] = string(newRunes)
+            a.setLines(lines)
+        } else {
+            // если в конце строки — объединить с следующей
+            if a.editY < len(lines)-1 {
+                next := lines[a.editY+1]
+                lines[a.editY] = line + next
+                // удалить следующую строку
+                newLines := append([]string{}, lines[:a.editY+1]...)
+                if a.editY+2 <= len(lines)-1 {
+                    newLines = append(newLines, lines[a.editY+2:]...)
+                }
+                a.setLines(newLines)
+            }
+        }
+        a.ensureCursorVisible()
+    }
+
+    // Нормализация Backspace/DEL/Ctrl-H: направляем разные варианты в соответствующие обработчики.
+    // Сценарий: Ctrl-H в большинстве терминалов может приходить как Backspace.
+    // Если это Ctrl-H и пользователь в режиме редактирования правой панели — считаем Backspace.
+    if ev.Key() == tcell.KeyBackspace || ev.Key() == tcell.KeyBackspace2 || ev.Rune() == '\b' {
+        doBackspace()
+        return
+    }
+    // Ctrl-H может приходить как tcell.KeyCtrlH; если в edit на правой панели — обрабатываем как backspace,
+    // иначе используем его как переключение панели (чтобы не ломать пользовательские хоткеи).
+    if ev.Key() == tcell.KeyCtrlH {
+        if a.activePanel == "right" && a.mode == "edit" {
+            doBackspace()
+            return
+        }
+        // иначе — переключение на левую панель
+        a.setActivePanel("left")
+        return
+    }
+    // DEL: явный KeyDelete или ASCII DEL (127)
+    if ev.Key() == tcell.KeyDelete || ev.Rune() == rune(127) {
+        doDelete()
+        return
+    }
+
     // Общие команды
     switch ev.Key() {
     case tcell.KeyCtrlQ:
@@ -637,15 +734,9 @@ func (a *App) handleKey(ev *tcell.EventKey) {
 
     case tcell.KeyEscape:
         a.setActivePanel("left")
-
-    case tcell.KeyCtrlH:
-        a.setActivePanel("left")
-
-    case tcell.KeyCtrlL:
-        a.setActivePanel("right")
     }
 
-    // Навигация и редактирование
+    // Навигация и редактирование стрелками/Enter и т.д.
     switch ev.Key() {
     case tcell.KeyUp:
         if a.activePanel == "left" {
@@ -753,69 +844,6 @@ func (a *App) handleKey(ev *tcell.EventKey) {
             a.editX = 0
             a.ensureCursorVisible()
         }
-    case tcell.KeyBackspace, tcell.KeyBackspace2:
-        if a.activePanel == "right" && a.mode == "edit" {
-            lines := a.getLines()
-            // защита
-            if len(lines) == 0 {
-                a.setLines([]string{""})
-                a.editX = 0
-                a.editY = 0
-                a.ensureCursorVisible()
-                return
-            }
-            line := lines[a.editY]
-            runes := []rune(line)
-            if a.editX > 0 {
-                // удалить rune слева от курсора
-                if a.editX <= len(runes) {
-                    newRunes := append(runes[:a.editX-1], runes[a.editX:]...)
-                    lines[a.editY] = string(newRunes)
-                    a.setLines(lines)
-                    a.editX--
-                }
-            } else {
-                // если в начале строки — объединить с предыдущей
-                if a.editY > 0 {
-                    prev := lines[a.editY-1]
-                    lines[a.editY-1] = prev + line
-                    // удалить текущую строку
-                    newLines := append([]string{}, lines[:a.editY]...)
-                    if a.editY+1 <= len(lines)-1 {
-                        newLines = append(newLines, lines[a.editY+1:]...)
-                    }
-                    a.setLines(newLines)
-                    a.editY--
-                    a.editX = len([]rune(prev))
-                }
-            }
-            a.ensureCursorVisible()
-        }
-    case tcell.KeyDelete:
-        if a.activePanel == "right" && a.mode == "edit" {
-            lines := a.getLines()
-            line := lines[a.editY]
-            runes := []rune(line)
-            if a.editX < len(runes) {
-                // удалить текущий rune
-                newRunes := append(runes[:a.editX], runes[a.editX+1:]...)
-                lines[a.editY] = string(newRunes)
-                a.setLines(lines)
-            } else {
-                // если в конце строки — объединить с следующей
-                if a.editY < len(lines)-1 {
-                    next := lines[a.editY+1]
-                    lines[a.editY] = line + next
-                    // удалить следующую строку
-                    newLines := append([]string{}, lines[:a.editY+1]...)
-                    if a.editY+2 <= len(lines)-1 {
-                        newLines = append(newLines, lines[a.editY+2:]...)
-                    }
-                    a.setLines(newLines)
-                }
-            }
-            a.ensureCursorVisible()
-        }
     }
 
     // Обработка символов (ввод текста)
@@ -858,21 +886,22 @@ func (a *App) handleKey(ev *tcell.EventKey) {
             return
         }
 
-        // Горячие сочетания с буквами (Ctrl+h, Ctrl+l) уже обработаны выше, но если потребуется — добавьте здесь
-    }
-
-    // Также можно обрабатывать модификаторы на буквы
-    switch ev.Rune() {
-    case 'h':
-        if ev.Modifiers()&tcell.ModCtrl != 0 {
-            a.setActivePanel("left")
-        }
-    case 'l':
-        if ev.Modifiers()&tcell.ModCtrl != 0 {
-            a.setActivePanel("right")
+        // Горячие сочетания с буквами (Ctrl+h, Ctrl+l)
+        // Если ev.Rune() == 'h' и модификатор Ctrl — переключаем панели.
+        // Аналогично для 'l'.
+        switch r {
+        case 'h':
+            if ev.Modifiers()&tcell.ModCtrl != 0 {
+                a.setActivePanel("left")
+            }
+        case 'l':
+            if ev.Modifiers()&tcell.ModCtrl != 0 {
+                a.setActivePanel("right")
+            }
         }
     }
 }
+
 
 // Основной цикл приложения
 func (a *App) Run() {
