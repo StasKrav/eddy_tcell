@@ -1014,12 +1014,12 @@ func (a *App) drawStatus() {
 
 	// Формируем статусную строку с фиксированной шириной для панели и режима
 	panelText := fmt.Sprintf("%-5s", a.activePanel) // панель всегда 5 символов (left/right)
-	modeText := fmt.Sprintf("%-7s", a.mode)         // режим всегда 7 символов (edit/preview)
+	modeText := fmt.Sprintf("%-8s", a.mode)         // режим всегда 7 символов (edit/preview)
 	status := fmt.Sprintf("Panel: %s | Mode: %s | File: %s", panelText, modeText, filepath.Base(a.currentFile))
 
 	col := 0
 	panelStart := runewidth.StringWidth("Panel: ")
-	modeStart := 20 // "Panel: " (7) + 5 символов панели + " | Mode: " (8)
+	modeStart := 21 // "Panel: " (7) + 5 символов панели + " | Mode: " (8)
 	for _, r := range status {
 		w := runewidth.RuneWidth(r)
 		if col >= a.width {
@@ -1031,7 +1031,7 @@ func (a *App) drawStatus() {
 			style = style.Foreground(panelColor).Bold(true)
 		}
 		// Проверяем, находится ли символ в области режима
-		if col >= modeStart && col < modeStart+7 {
+		if col >= modeStart && col < modeStart+8 {
 			// Определяем цвет для активного режима
 			color := tcell.ColorGray
 			if a.mode == "edit" {
