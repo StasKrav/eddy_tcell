@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -178,6 +179,50 @@ func (a *App) deleteFile() {
 	}
 }
 
+// Форматирование кода с помощью gofmt
+func (a *App) formatWithGofmt() {
+	if a.currentFile == "" || !a.isGoFile() {
+		return
+	}
+
+	// Создаем временную команду для форматирования
+	cmd := exec.Command("gofmt")
+	cmd.Stdin = strings.NewReader(a.fileContent)
+	output, err := cmd.Output()
+
+	if err != nil {
+		// В случае ошибки форматирования, можно показать уведомление
+		// Пока просто возвращаемся без изменений
+		return
+	}
+
+	// Обновляем содержимое файла отформатированным текстом
+	a.fileContent = string(output)
+	a.fileModified = true
+}
+
+// Форматирование кода с помощью goimports
+func (a *App) formatWithGoimports() {
+	if a.currentFile == "" || !a.isGoFile() {
+		return
+	}
+
+	// Создаем временную команду для форматирования
+	cmd := exec.Command("goimports")
+	cmd.Stdin = strings.NewReader(a.fileContent)
+	output, err := cmd.Output()
+
+	if err != nil {
+		// В случае ошибки форматирования, можно показать уведомление
+		// Пока просто возвращаемся без изменений
+		return
+	}
+
+	// Обновляем содержимое файла отформатированным текстом
+	a.fileContent = string(output)
+	a.fileModified = true
+}
+
 // Сохранение текущего файла
 func (a *App) saveFile() {
 	if a.currentFile == "" {
@@ -246,6 +291,8 @@ Ctrl+→ - переключить на правую панель
 РЕДАКТИРОВАНИЕ:
 Tab - переключить режим редактирования/предпросмотра
 Ctrl+S - сохранить файл
+Ctrl+F - форматировать код с помощью gofmt
+Ctrl+G - форматировать код с помощью goimports
 Delete - удалить файл (в левой панели)
 
 ПРОЧЕЕ:
@@ -917,7 +964,8 @@ func (a *App) drawPreview() {
 		inInlineCode := false
 		inEmphasis := false
 
-		for idx := 0; idx < len(runes) && col < editorWidth; idx++ {
+		// Итерируем по runes, начиная с rune-индекса scrollX (горизонтальная прокрутка)
+		for idx := a.scrollX; idx < len(runes) && col < editorWidth; idx++ {
 			r := runes[idx]
 
 			// handle inline code delimiter `
@@ -958,15 +1006,19 @@ func (a *App) drawPreview() {
 					if parenClose != -1 {
 						// render the text between idx+1 .. closeIdx-1 as link text
 						linkText := runes[idx+1 : closeIdx]
-						for _, lr := range linkText {
+						// Применяем горизонтальную прокрутку к тексту ссылки
+						linkCol := 0
+						for k := 0; k < len(linkText) && linkCol < editorWidth-col; k++ {
+							lr := linkText[k]
 							w := runewidth.RuneWidth(lr)
-							if col+w > editorWidth {
+							if linkCol+w > editorWidth-col {
 								break
 							}
 							linkStyle := baseStyle.Foreground(tcell.ColorLightBlue).Underline(true)
-							a.screen.SetContent(startX+col, y, lr, nil, linkStyle)
-							col += w
+							a.screen.SetContent(startX+col+linkCol, y, lr, nil, linkStyle)
+							linkCol += w
 						}
+						col += linkCol
 						// advance idx to parenClose (skip url)
 						idx = parenClose
 						continue
@@ -983,7 +1035,8 @@ func (a *App) drawPreview() {
 			}
 
 			// special: color list marker differently if at line start
-			if (r == '-' || r == '+' || r == '*') && col == 0 && listRe.MatchString(string(runes)) {
+			// Учитываем смещение при горизонтальной прокрутке
+			if (r == '-' || r == '+' || r == '*') && idx == 0 && listRe.MatchString(string(runes)) {
 				curStyle = tcell.StyleDefault.Foreground(tcell.ColorLightGrey).Bold(true)
 			}
 
@@ -1143,6 +1196,14 @@ func (a *App) handleKey(ev *tcell.EventKey) {
 	case tcell.KeyCtrlS:
 		a.saveFile()
 
+	case tcell.KeyCtrlF:
+		// Форматирование с помощью gofmt
+		a.formatWithGofmt()
+
+	case tcell.KeyCtrlG:
+		// Форматирование с помощью goimports
+		a.formatWithGoimports()
+
 	case tcell.KeyDelete:
 		// Удаление файла только в левой панели
 		if a.activePanel == "left" {
@@ -1172,16 +1233,23 @@ func (a *App) handleKey(ev *tcell.EventKey) {
 			if a.cursor > 0 {
 				a.cursor--
 			}
-		} else if a.activePanel == "right" && a.mode == "edit" {
-			if a.editY > 0 {
-				a.editY--
-				// корректируем X по длине новой строки
-				lines := a.getLines()
-				lineRunes := []rune(lines[a.editY])
-				if a.editX > len(lineRunes) {
-					a.editX = len(lineRunes)
+		} else if a.activePanel == "right" {
+			if a.mode == "edit" {
+				if a.editY > 0 {
+					a.editY--
+					// корректируем X по длине новой строки
+					lines := a.getLines()
+					lineRunes := []rune(lines[a.editY])
+					if a.editX > len(lineRunes) {
+						a.editX = len(lineRunes)
+					}
+					a.ensureCursorVisible()
 				}
-				a.ensureCursorVisible()
+			} else if a.mode == "preview" {
+				// Прокрутка вверх в режиме предпросмотра
+				if a.scrollY > 0 {
+					a.scrollY--
+				}
 			}
 		}
 	case tcell.KeyDown:
@@ -1189,51 +1257,94 @@ func (a *App) handleKey(ev *tcell.EventKey) {
 			if a.cursor < len(a.files)-1 {
 				a.cursor++
 			}
-		} else if a.activePanel == "right" && a.mode == "edit" {
-			lines := a.getLines()
-			if a.editY < len(lines)-1 {
-				a.editY++
-				// корректируем X по длине новой строки
-				lineRunes := []rune(lines[a.editY])
-				if a.editX > len(lineRunes) {
-					a.editX = len(lineRunes)
+		} else if a.activePanel == "right" {
+			if a.mode == "edit" {
+				lines := a.getLines()
+				if a.editY < len(lines)-1 {
+					a.editY++
+					// корректируем X по длине новой строки
+					lineRunes := []rune(lines[a.editY])
+					if a.editX > len(lineRunes) {
+						a.editX = len(lineRunes)
+					}
+					a.ensureCursorVisible()
 				}
-				a.ensureCursorVisible()
+			} else if a.mode == "preview" {
+				// Прокрутка вниз в режиме предпросмотра
+				lines := a.getLines()
+				if a.scrollY < len(lines)-1 {
+					a.scrollY++
+				}
+			}
+		}
+	case tcell.KeyPgUp:
+		if a.activePanel == "right" && a.mode == "preview" {
+			// Прокрутка на страницу вверх в режиме предпросмотра
+			editorHeight := a.height - 5
+			if a.scrollY > editorHeight {
+				a.scrollY -= editorHeight
+			} else {
+				a.scrollY = 0
+			}
+		}
+	case tcell.KeyPgDn:
+		if a.activePanel == "right" && a.mode == "preview" {
+			// Прокрутка на страницу вниз в режиме предпросмотра
+			lines := a.getLines()
+			editorHeight := a.height - 5
+			maxScroll := len(lines) - 1
+			if a.scrollY < maxScroll-editorHeight {
+				a.scrollY += editorHeight
+			} else {
+				a.scrollY = maxScroll
 			}
 		}
 	case tcell.KeyLeft:
 		if a.activePanel == "left" {
 			a.goBack()
-		} else if a.activePanel == "right" && a.mode == "edit" {
-			if a.editX > 0 {
-				a.editX--
-				a.ensureCursorVisible()
-			} else {
-				// Переместиться к концу предыдущей строки, если есть
-				if a.editY > 0 {
-					a.editY--
-					lines := a.getLines()
-					a.editX = len([]rune(lines[a.editY]))
+		} else if a.activePanel == "right" {
+			if a.mode == "edit" {
+				if a.editX > 0 {
+					a.editX--
 					a.ensureCursorVisible()
+				} else {
+					// Переместиться к концу предыдущей строки, если есть
+					if a.editY > 0 {
+						a.editY--
+						lines := a.getLines()
+						a.editX = len([]rune(lines[a.editY]))
+						a.ensureCursorVisible()
+					}
+				}
+			} else if a.mode == "preview" {
+				// Горизонтальная прокрутка влево в режиме предпросмотра
+				if a.scrollX > 0 {
+					a.scrollX--
 				}
 			}
 		}
 	case tcell.KeyRight:
 		if a.activePanel == "left" {
 			a.openSelected()
-		} else if a.activePanel == "right" && a.mode == "edit" {
-			lines := a.getLines()
-			lineRunes := []rune(lines[a.editY])
-			if a.editX < len(lineRunes) {
-				a.editX++
-				a.ensureCursorVisible()
-			} else {
-				// перейти в начало следующей строки, если есть
-				if a.editY < len(lines)-1 {
-					a.editY++
-					a.editX = 0
+		} else if a.activePanel == "right" {
+			if a.mode == "edit" {
+				lines := a.getLines()
+				lineRunes := []rune(lines[a.editY])
+				if a.editX < len(lineRunes) {
+					a.editX++
 					a.ensureCursorVisible()
+				} else {
+					// перейти в начало следующей строки, если есть
+					if a.editY < len(lines)-1 {
+						a.editY++
+						a.editX = 0
+						a.ensureCursorVisible()
+					}
 				}
+			} else if a.mode == "preview" {
+				// Горизонтальная прокрутка вправо в режиме предпросмотра
+				// Можно увеличивать scrollX без ограничений, так как ширина строки неизвестна заранее
+				a.scrollX++
 			}
 		}
 	case tcell.KeyEnter:
