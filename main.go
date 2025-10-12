@@ -23,16 +23,17 @@ const textEditorPadding = 2 // Отступ от левой границы те�
 
 // Основная структура приложения
 type App struct {
-	screen     tcell.Screen
-	currentDir string
-	files      []fileItem
-	cursor     int
-	showHidden bool
+	screen       tcell.Screen
+	currentDir   string
+	files        []fileItem
+	cursor       int
+	showHidden   bool
+	showTerminal bool
 
 	currentFile  string
 	fileContent  string
 	fileModified bool   // флаг, указывающий, был ли файл изменен
-	mode         string // "edit" или "preview"
+	mode         string // "edit" или "preview" (оставлено для совместимости, но preview не показывается)
 	activePanel  string // "left" или "right"
 
 	// Размеры экрана
@@ -46,6 +47,12 @@ type App struct {
 
 	// Размеры панелей
 	leftWidth int
+}
+
+// Тип токена для подсветки
+type hlToken struct {
+	text  string
+	style tcell.Style
 }
 
 // Инициализация приложения
@@ -256,6 +263,10 @@ func (a *App) toggleMode() {
 		a.mode = "edit"
 	}
 }
+func (a *App) toggleTerminal() {
+	a.showTerminal = !a.showTerminal
+	a.ensureCursorVisible()
+}
 
 // Возврат в родительскую директорию
 func (a *App) goBack() {
@@ -289,7 +300,7 @@ Ctrl+← - переключить на левую панель
 Ctrl+→ - переключить на правую панель
 
 РЕДАКТИРОВАНИЕ:
-Tab - переключить режим редактирования/предпросмотра
+Tab - переключить режим редактирования/предпросмотра (отключено)
 Ctrl+S - сохранить файл
 Ctrl+F - форматировать код с помощью gofmt
 Ctrl+G - форматировать код с помощью goimports
@@ -303,25 +314,30 @@ Ctrl+Q - выйти
 ИНДИКАТОРЫ:
 * - в заголовке редактора означает, что файл был изменен, но еще не сохранен
 
-ПОДСВЕТКА СИНТАКСИСА:
+ПОДСВЕТКА СИНТАКСА:
 Автоматическая подсветка синтаксиса для файлов Go (.go)
 
 Нажмите любую клавишу для закрытия справки...`
 
 	// Временно заменяем содержимое на справку
 	oldContent := a.fileContent
-	oldMode := a.mode
+	oldActive := a.activePanel
 	a.fileContent = helpText
-	a.mode = "preview"
+	a.activePanel = "right"
 	a.draw()
 
 	// Ждем нажатия клавиши
-	ev := a.screen.PollEvent()
-	if _, ok := ev.(*tcell.EventKey); ok {
-		// Восстанавливаем содержимое
-		a.fileContent = oldContent
-		a.mode = oldMode
+	for {
+		ev := a.screen.PollEvent()
+		if _, ok := ev.(*tcell.EventKey); ok {
+			break
+		}
 	}
+
+	// Восстанавливаем содержимое
+	a.fileContent = oldContent
+	a.activePanel = oldActive
+	a.draw()
 }
 
 // Получить строки (гарантированно хотя бы одна)
@@ -450,7 +466,7 @@ func (a *App) draw() {
 	// Рисуем левую панель (файловый менеджер)
 	a.drawFileList()
 
-	// Рисуем правую панель (редактор/предпросмотр)
+	// Рисуем правую панель (редактор). Preview больше не показываем.
 	a.drawEditor()
 
 	// Рисуем статусную строку
@@ -525,9 +541,6 @@ func (a *App) drawFileList() {
 func (a *App) drawEditor() {
 	// Заголовок правой панели
 	title := "  Editor"
-	if a.mode == "preview" {
-		title = "  Preview"
-	}
 
 	// Добавляем звездочку, если файл был изменен
 	if a.fileModified {
@@ -548,14 +561,198 @@ func (a *App) drawEditor() {
 		col += w
 	}
 
-	if a.mode == "edit" {
-		a.drawTextEditor()
-	} else {
-		a.drawPreview()
-	}
+	// Всегда показываем редактор (preview отключен)
+	a.drawTextEditor()
 }
 
-// Подсветка синтаксиса для Go файлов
+// Подсветка синтаксиса для Go — построчная версия, сохраняющая состояние между строками
+func (a *App) highlightGoSyntaxLines(lines []string) [][]hlToken {
+	// Ключевые слова Go
+	keywords := map[string]bool{
+		"break": true, "case": true, "chan": true, "const": true, "continue": true,
+		"default": true, "defer": true, "else": true, "fallthrough": true, "for": true,
+		"func": true, "go": true, "goto": true, "if": true, "import": true,
+		"interface": true, "map": true, "package": true, "range": true, "return": true,
+		"select": true, "struct": true, "switch": true, "type": true, "var": true,
+	}
+	types := map[string]bool{
+		"bool": true, "byte": true, "complex64": true, "complex128": true, "error": true,
+		"float32": true, "float64": true, "int": true, "int8": true, "int16": true,
+		"int32": true, "int64": true, "rune": true, "string": true, "uint": true,
+		"uint8": true, "uint16": true, "uint32": true, "uint64": true, "uintptr": true,
+	}
+
+	var result [][]hlToken
+
+	inString := false       // "
+	inRawString := false    // `
+	inMultiComment := false // /* */
+	inEscape := false       // escape inside normal string
+
+	for _, line := range lines {
+		runes := []rune(line)
+		i := 0
+		var row []hlToken
+
+		for i < len(runes) {
+			// Если в многострочном комментарии — ищем конец
+			if inMultiComment {
+				start := i
+				for i < len(runes) {
+					if i+1 < len(runes) && runes[i] == '*' && runes[i+1] == '/' {
+						i += 2
+						inMultiComment = false
+						break
+					}
+					i++
+				}
+				row = append(row, hlToken{string(runes[start:i]), tcell.StyleDefault.Foreground(tcell.ColorGreen)})
+				continue
+			}
+
+			// Если в raw string (backticks)
+			if inRawString {
+				start := i
+				for i < len(runes) {
+					if runes[i] == '`' {
+						i++
+						inRawString = false
+						break
+					}
+					i++
+				}
+				row = append(row, hlToken{string(runes[start:i]), tcell.StyleDefault.Foreground(tcell.ColorYellow)})
+				continue
+			}
+
+			// Если внутри обычной строки "
+			if inString {
+				start := i
+				for i < len(runes) {
+					if runes[i] == '"' && !inEscape {
+						i++
+						inString = false
+						break
+					}
+					if runes[i] == '\\' && !inEscape {
+						inEscape = true
+					} else {
+						inEscape = false
+					}
+					i++
+				}
+				row = append(row, hlToken{string(runes[start:i]), tcell.StyleDefault.Foreground(tcell.ColorYellow)})
+				continue
+			}
+
+			r := runes[i]
+
+			// начало многострочного комментария
+			if i+1 < len(runes) && r == '/' && runes[i+1] == '*' {
+				start := i
+				i += 2
+				inMultiComment = true
+				for i < len(runes) {
+					if i+1 < len(runes) && runes[i] == '*' && runes[i+1] == '/' {
+						i += 2
+						inMultiComment = false
+						break
+					}
+					i++
+				}
+				row = append(row, hlToken{string(runes[start:i]), tcell.StyleDefault.Foreground(tcell.ColorGreen)})
+				continue
+			}
+
+			// однострочный коммент //
+			if i+1 < len(runes) && r == '/' && runes[i+1] == '/' {
+				row = append(row, hlToken{string(runes[i:]), tcell.StyleDefault.Foreground(tcell.ColorGreen)})
+				break
+			}
+
+			// raw string start `
+			if r == '`' {
+				start := i
+				i++
+				inRawString = true
+				for i < len(runes) {
+					if runes[i] == '`' {
+						i++
+						inRawString = false
+						break
+					}
+					i++
+				}
+				row = append(row, hlToken{string(runes[start:i]), tcell.StyleDefault.Foreground(tcell.ColorYellow)})
+				continue
+			}
+
+			// double-quoted string start "
+			if r == '"' {
+				start := i
+				i++
+				inString = true
+				inEscape = false
+				for i < len(runes) {
+					if runes[i] == '"' && !inEscape {
+						i++
+						inString = false
+						break
+					}
+					if runes[i] == '\\' && !inEscape {
+						inEscape = true
+					} else {
+						inEscape = false
+					}
+					i++
+				}
+				row = append(row, hlToken{string(runes[start:i]), tcell.StyleDefault.Foreground(tcell.ColorYellow)})
+				continue
+			}
+
+			// идентификаторы
+			if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || r == '_' {
+				start := i
+				for i < len(runes) && ((runes[i] >= 'a' && runes[i] <= 'z') ||
+					(runes[i] >= 'A' && runes[i] <= 'Z') ||
+					(runes[i] >= '0' && runes[i] <= '9') ||
+					runes[i] == '_') {
+					i++
+				}
+				word := string(runes[start:i])
+				style := tcell.StyleDefault.Foreground(tcell.ColorWhite)
+				if keywords[word] {
+					style = tcell.StyleDefault.Foreground(tcell.ColorBlue).Bold(true)
+				} else if types[word] {
+					style = tcell.StyleDefault.Foreground(tcell.ColorAqua)
+				}
+				row = append(row, hlToken{word, style})
+				continue
+			}
+
+			// числа
+			if r >= '0' && r <= '9' {
+				start := i
+				for i < len(runes) && ((runes[i] >= '0' && runes[i] <= '9') ||
+					runes[i] == '.' || runes[i] == 'e' || runes[i] == 'E' ||
+					runes[i] == '+' || runes[i] == '-') {
+					i++
+				}
+				row = append(row, hlToken{string(runes[start:i]), tcell.StyleDefault.Foreground(tcell.ColorFuchsia)})
+				continue
+			}
+
+			// прочие одиночные символы
+			row = append(row, hlToken{string(r), tcell.StyleDefault.Foreground(tcell.ColorWhite)})
+			i++
+		}
+
+		result = append(result, row)
+	}
+	return result
+}
+
+// Подсветка синтаксиса для одной строки (устаревшая версия, оставлена для совместимости)
 func (a *App) highlightGoSyntax(line string) []struct {
 	text  string
 	style tcell.Style
@@ -773,7 +970,6 @@ func (a *App) highlightGoSyntax(line string) []struct {
 // Отрисовка текстового редактора
 func (a *App) drawTextEditor() {
 	// В первую очередь, убедимся, что курсор виден.
-	// Позже мы также модифицируем ensureCursorVisible()
 	a.ensureCursorVisible()
 
 	lines := a.getLines()
@@ -792,6 +988,12 @@ func (a *App) drawTextEditor() {
 	// Проверяем, является ли файл Go файлом для подсветки синтаксиса
 	isGoFile := a.isGoFile()
 
+	// Предподсветка всего буфера (чтобы сохранить состояния между строками)
+	var highlightedLines [][]hlToken
+	if isGoFile {
+		highlightedLines = a.highlightGoSyntaxLines(lines)
+	}
+
 	for i := 0; i < editorHeight; i++ {
 		lineIdx := a.scrollY + i
 		y := startY + i
@@ -799,7 +1001,6 @@ func (a *App) drawTextEditor() {
 			// Если курсор находится на пустой строке после текста
 			if a.activePanel == "right" && lineIdx == a.editY {
 				// Корректируем положение курсора с учетом отступа
-				// для пустой строки под вычисление используем нулевую ширину
 				cursorCol := 0 - runesDisplayWidth([]rune(""), a.scrollX) // фактически 0
 				cursorX := startX + cursorCol
 				cursorY := y
@@ -815,7 +1016,7 @@ func (a *App) drawTextEditor() {
 
 		if isGoFile {
 			// Используем подсветку синтаксиса для Go файлов
-			highlighted := a.highlightGoSyntax(line)
+			highlighted := highlightedLines[lineIdx]
 			currentCol := 0
 
 			for _, token := range highlighted {
@@ -893,7 +1094,7 @@ func (a *App) drawTextEditor() {
 	}
 }
 
-// Отрисовка предпросмотра
+// Отрисовка предпросмотра (осталась, но не используется по умолчанию)
 func (a *App) drawPreview() {
 	lines := strings.Split(a.fileContent, "\n")
 	startX := a.leftWidth + 1 + textEditorPadding
@@ -1063,8 +1264,6 @@ func (a *App) drawStatus() {
 		panelColor = tcell.ColorGreen
 	}
 
-	// Определяем цвет для активного режима
-
 	// Формируем статусную строку с фиксированной шириной для панели и режима
 	panelText := fmt.Sprintf("%-5s", a.activePanel) // панель всегда 5 символов (left/right)
 	modeText := fmt.Sprintf("%-8s", a.mode)         // режим всегда 7 символов (edit/preview)
@@ -1101,44 +1300,38 @@ func (a *App) drawStatus() {
 
 // Обработка событий клавиатуры
 func (a *App) handleKey(ev *tcell.EventKey) {
-	// Вспомогательные обработчики для Backspace и Delete
 	doBackspace := func() {
 		if a.activePanel != "right" || a.mode != "edit" {
 			return
 		}
 		lines := a.getLines()
-		// защита
 		if len(lines) == 0 {
-			a.setLines([]string{""})
-			a.editX = 0
+			lines = []string{""}
+			a.setLines(lines)
 			a.editY = 0
+			a.editX = 0
 			a.ensureCursorVisible()
 			return
 		}
+
 		line := lines[a.editY]
 		runes := []rune(line)
 		if a.editX > 0 {
-			// удалить rune слева от курсора
 			if a.editX <= len(runes) {
-				newRunes := append(runes[:a.editX-1], runes[a.editX:]...)
-				lines[a.editY] = string(newRunes)
+				lines[a.editY] = string(append(runes[:a.editX-1], runes[a.editX:]...))
 				a.setLines(lines)
 				a.editX--
 			}
-		} else {
-			// если в начале строки — объединить с предыдущей
-			if a.editY > 0 {
-				prev := lines[a.editY-1]
-				lines[a.editY-1] = prev + line
-				// удалить текущую строку
-				newLines := append([]string{}, lines[:a.editY]...)
-				if a.editY+1 <= len(lines)-1 {
-					newLines = append(newLines, lines[a.editY+1:]...)
-				}
-				a.setLines(newLines)
-				a.editY--
-				a.editX = len([]rune(prev))
+		} else if a.editY > 0 {
+			prev := lines[a.editY-1]
+			lines[a.editY-1] = prev + line
+			newLines := append([]string{}, lines[:a.editY]...)
+			if a.editY+1 <= len(lines)-1 {
+				newLines = append(newLines, lines[a.editY+1:]...)
 			}
+			a.setLines(newLines)
+			a.editY--
+			a.editX = len([]rune(prev))
 		}
 		a.ensureCursorVisible()
 	}
@@ -1154,34 +1347,24 @@ func (a *App) handleKey(ev *tcell.EventKey) {
 		line := lines[a.editY]
 		runes := []rune(line)
 		if a.editX < len(runes) {
-			// удалить текущий rune
-			newRunes := append(runes[:a.editX], runes[a.editX+1:]...)
-			lines[a.editY] = string(newRunes)
+			lines[a.editY] = string(append(runes[:a.editX], runes[a.editX+1:]...))
 			a.setLines(lines)
-		} else {
-			// если в конце строки — объединить с следующей
-			if a.editY < len(lines)-1 {
-				next := lines[a.editY+1]
-				lines[a.editY] = line + next
-				// удалить следующую строку
-				newLines := append([]string{}, lines[:a.editY+1]...)
-				if a.editY+2 <= len(lines)-1 {
-					newLines = append(newLines, lines[a.editY+2:]...)
-				}
-				a.setLines(newLines)
+		} else if a.editY < len(lines)-1 {
+			next := lines[a.editY+1]
+			lines[a.editY] = line + next
+			newLines := append([]string{}, lines[:a.editY+1]...)
+			if a.editY+2 <= len(lines)-1 {
+				newLines = append(newLines, lines[a.editY+2:]...)
 			}
+			a.setLines(newLines)
 		}
 		a.ensureCursorVisible()
 	}
 
-	// Нормализация Backspace/DEL/Ctrl-H: направляем разные варианты в соответствующие обработчики.
-	// Сценарий: Ctrl-H в большинстве терминалов может приходить как Backspace.
-	// Если это Ctrl-H и пользователь в режиме редактирования правой панели — считаем Backspace.
 	if ev.Key() == tcell.KeyBackspace || ev.Key() == tcell.KeyBackspace2 || ev.Rune() == '\b' {
 		doBackspace()
 		return
 	}
-	// DEL: явный KeyDelete или ASCII DEL (127)
 	if ev.Key() == tcell.KeyDelete || ev.Rune() == rune(127) {
 		doDelete()
 		return
@@ -1192,29 +1375,24 @@ func (a *App) handleKey(ev *tcell.EventKey) {
 	case tcell.KeyCtrlQ:
 		a.screen.Fini()
 		os.Exit(0)
-
 	case tcell.KeyCtrlS:
 		a.saveFile()
-
 	case tcell.KeyCtrlF:
-		// Форматирование с помощью gofmt
 		a.formatWithGofmt()
-
 	case tcell.KeyCtrlG:
-		// Форматирование с помощью goimports
 		a.formatWithGoimports()
-
 	case tcell.KeyDelete:
-		// Удаление файла только в левой панели
 		if a.activePanel == "left" {
 			a.deleteFile()
 		}
-
 	case tcell.KeyTab:
-		a.toggleMode()
+		// Tab не переключает в preview — режим preview отключен в UI.
+		// Можно использовать Tab для других целей при желании.
+	case tcell.KeyCtrlT:
+		a.toggleTerminal() // новый вызов терминала
 	}
 
-	// Переключение между панелями с помощью Ctrl+стрелки
+	// Переключение панелей Ctrl+стрелки
 	if ev.Modifiers()&tcell.ModCtrl != 0 {
 		switch ev.Key() {
 		case tcell.KeyLeft:
@@ -1226,77 +1404,36 @@ func (a *App) handleKey(ev *tcell.EventKey) {
 		}
 	}
 
-	// Навигация и редактирование стрелками/Enter и т.д.
+	// Навигация стрелками/Enter
 	switch ev.Key() {
 	case tcell.KeyUp:
-		if a.activePanel == "left" {
-			if a.cursor > 0 {
-				a.cursor--
-			}
+		if a.activePanel == "left" && a.cursor > 0 {
+			a.cursor--
 		} else if a.activePanel == "right" {
-			if a.mode == "edit" {
-				if a.editY > 0 {
-					a.editY--
-					// корректируем X по длине новой строки
-					lines := a.getLines()
-					lineRunes := []rune(lines[a.editY])
-					if a.editX > len(lineRunes) {
-						a.editX = len(lineRunes)
-					}
-					a.ensureCursorVisible()
+			lines := a.getLines()
+			if a.mode == "edit" && a.editY > 0 {
+				a.editY--
+				if a.editX > len([]rune(lines[a.editY])) {
+					a.editX = len([]rune(lines[a.editY]))
 				}
-			} else if a.mode == "preview" {
-				// Прокрутка вверх в режиме предпросмотра
-				if a.scrollY > 0 {
-					a.scrollY--
-				}
+				a.ensureCursorVisible()
+			} else if a.mode == "preview" && a.scrollY > 0 {
+				a.scrollY--
 			}
 		}
 	case tcell.KeyDown:
-		if a.activePanel == "left" {
-			if a.cursor < len(a.files)-1 {
-				a.cursor++
-			}
+		if a.activePanel == "left" && a.cursor < len(a.files)-1 {
+			a.cursor++
 		} else if a.activePanel == "right" {
-			if a.mode == "edit" {
-				lines := a.getLines()
-				if a.editY < len(lines)-1 {
-					a.editY++
-					// корректируем X по длине новой строки
-					lineRunes := []rune(lines[a.editY])
-					if a.editX > len(lineRunes) {
-						a.editX = len(lineRunes)
-					}
-					a.ensureCursorVisible()
-				}
-			} else if a.mode == "preview" {
-				// Прокрутка вниз в режиме предпросмотра
-				lines := a.getLines()
-				if a.scrollY < len(lines)-1 {
-					a.scrollY++
-				}
-			}
-		}
-	case tcell.KeyPgUp:
-		if a.activePanel == "right" && a.mode == "preview" {
-			// Прокрутка на страницу вверх в режиме предпросмотра
-			editorHeight := a.height - 5
-			if a.scrollY > editorHeight {
-				a.scrollY -= editorHeight
-			} else {
-				a.scrollY = 0
-			}
-		}
-	case tcell.KeyPgDn:
-		if a.activePanel == "right" && a.mode == "preview" {
-			// Прокрутка на страницу вниз в режиме предпросмотра
 			lines := a.getLines()
-			editorHeight := a.height - 5
-			maxScroll := len(lines) - 1
-			if a.scrollY < maxScroll-editorHeight {
-				a.scrollY += editorHeight
-			} else {
-				a.scrollY = maxScroll
+			if a.mode == "edit" && a.editY < len(lines)-1 {
+				a.editY++
+				if a.editX > len([]rune(lines[a.editY])) {
+					a.editX = len([]rune(lines[a.editY]))
+				}
+				a.ensureCursorVisible()
+			} else if a.mode == "preview" && a.scrollY < len(lines)-1 {
+				a.scrollY++
 			}
 		}
 	case tcell.KeyLeft:
@@ -1306,44 +1443,30 @@ func (a *App) handleKey(ev *tcell.EventKey) {
 			if a.mode == "edit" {
 				if a.editX > 0 {
 					a.editX--
-					a.ensureCursorVisible()
-				} else {
-					// Переместиться к концу предыдущей строки, если есть
-					if a.editY > 0 {
-						a.editY--
-						lines := a.getLines()
-						a.editX = len([]rune(lines[a.editY]))
-						a.ensureCursorVisible()
-					}
+				} else if a.editY > 0 {
+					a.editY--
+					a.editX = len([]rune(a.getLines()[a.editY]))
 				}
-			} else if a.mode == "preview" {
-				// Горизонтальная прокрутка влево в режиме предпросмотра
-				if a.scrollX > 0 {
-					a.scrollX--
-				}
+				a.ensureCursorVisible()
+			} else if a.mode == "preview" && a.scrollX > 0 {
+				a.scrollX--
 			}
 		}
 	case tcell.KeyRight:
 		if a.activePanel == "left" {
 			a.openSelected()
 		} else if a.activePanel == "right" {
+			lines := a.getLines()
 			if a.mode == "edit" {
-				lines := a.getLines()
-				lineRunes := []rune(lines[a.editY])
-				if a.editX < len(lineRunes) {
+				lineLen := len([]rune(lines[a.editY]))
+				if a.editX < lineLen {
 					a.editX++
-					a.ensureCursorVisible()
-				} else {
-					// перейти в начало следующей строки, если есть
-					if a.editY < len(lines)-1 {
-						a.editY++
-						a.editX = 0
-						a.ensureCursorVisible()
-					}
+				} else if a.editY < len(lines)-1 {
+					a.editY++
+					a.editX = 0
 				}
+				a.ensureCursorVisible()
 			} else if a.mode == "preview" {
-				// Горизонтальная прокрутка вправо в режиме предпросмотра
-				// Можно увеличивать scrollX без ограничений, так как ширина строки неизвестна заранее
 				a.scrollX++
 			}
 		}
@@ -1351,13 +1474,11 @@ func (a *App) handleKey(ev *tcell.EventKey) {
 		if a.activePanel == "left" {
 			a.openSelected()
 		} else if a.activePanel == "right" && a.mode == "edit" {
-			// Вставить новую строку
 			lines := a.getLines()
 			line := lines[a.editY]
 			runes := []rune(line)
 			left := string(runes[:a.editX])
 			right := string(runes[a.editX:])
-			// обновляем текущую строку и вставляем новую
 			lines[a.editY] = left
 			newLines := append([]string{}, lines[:a.editY+1]...)
 			newLines = append(newLines, right)
@@ -1371,12 +1492,11 @@ func (a *App) handleKey(ev *tcell.EventKey) {
 		}
 	}
 
-	// Обработка символов (ввод текста)
+	// Ввод символов
 	if ev.Rune() != 0 {
 		r := ev.Rune()
 		switch r {
 		case '.':
-			// если пользователь нажал просто точку в любой панели
 			a.toggleHidden()
 			return
 		case '?':
@@ -1384,33 +1504,24 @@ func (a *App) handleKey(ev *tcell.EventKey) {
 			return
 		}
 
-		// Ввод символов в режиме редактирования правой панели
 		if a.activePanel == "right" && a.mode == "edit" {
 			lines := a.getLines()
-			// защита: если нет строк, добавим
 			if len(lines) == 0 {
 				lines = []string{""}
 			}
-			// вставляем rune
 			line := lines[a.editY]
 			runes := []rune(line)
-			// вставка r в позицию editX
 			if a.editX < 0 {
 				a.editX = 0
 			}
 			if a.editX > len(runes) {
 				a.editX = len(runes)
 			}
-			newRunes := append([]rune{}, runes[:a.editX]...)
-			newRunes = append(newRunes, r)
-			newRunes = append(newRunes, runes[a.editX:]...)
-			lines[a.editY] = string(newRunes)
+			lines[a.editY] = string(append(append(runes[:a.editX], r), runes[a.editX:]...))
 			a.setLines(lines)
 			a.editX++
 			a.ensureCursorVisible()
-			return
 		}
-
 	}
 }
 
