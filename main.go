@@ -33,7 +33,7 @@ type App struct {
 	currentFile  string
 	fileContent  string
 	fileModified bool   // флаг, указывающий, был ли файл изменен
-	mode         string // "edit" или "preview" (оставлено для совместимости, но preview не показывается)
+	mode         string // "edit" или "preview"
 	activePanel  string // "left" или "right"
 
 	// Размеры экрана
@@ -300,7 +300,7 @@ Ctrl+← - переключить на левую панель
 Ctrl+→ - переключить на правую панель
 
 РЕДАКТИРОВАНИЕ:
-Tab - переключить режим редактирования/предпросмотра (отключено)
+Tab - переключить режим редактирования/предпросмотра
 Ctrl+S - сохранить файл
 Ctrl+F - форматировать код с помощью gofmt
 Ctrl+G - форматировать код с помощью goimports
@@ -466,7 +466,7 @@ func (a *App) draw() {
 	// Рисуем левую панель (файловый менеджер)
 	a.drawFileList()
 
-	// Рисуем правую панель (редактор). Preview больше не показываем.
+	// Рисуем правую панель (редактор/предпросмотр)
 	a.drawEditor()
 
 	// Рисуем статусную строку
@@ -541,9 +541,12 @@ func (a *App) drawFileList() {
 func (a *App) drawEditor() {
 	// Заголовок правой панели
 	title := "  Editor"
+	if a.mode == "preview" {
+		title = "  Preview"
+	}
 
 	// Добавляем звездочку, если файл был изменен
-	if a.fileModified {
+	if a.fileModified && a.mode == "edit" {
 		title += " *"
 	}
 
@@ -561,8 +564,12 @@ func (a *App) drawEditor() {
 		col += w
 	}
 
-	// Всегда показываем редактор (preview отключен)
-	a.drawTextEditor()
+	// Показываем редактор или предпросмотр в зависимости от режима
+	if a.mode == "edit" {
+		a.drawTextEditor()
+	} else {
+		a.drawPreview()
+	}
 }
 
 // Подсветка синтаксиса для Go — построчная версия, сохраняющая состояние между строками
@@ -1394,7 +1401,12 @@ func (a *App) handleKey(ev *tcell.EventKey) {
 		return
 	}
 	if ev.Key() == tcell.KeyDelete || ev.Rune() == rune(127) {
-		doDelete()
+		// Обработка Delete в зависимости от активной панели
+		if a.activePanel == "left" {
+			a.deleteFile()
+		} else {
+			doDelete()
+		}
 		return
 	}
 
@@ -1414,8 +1426,10 @@ func (a *App) handleKey(ev *tcell.EventKey) {
 			a.deleteFile()
 		}
 	case tcell.KeyTab:
-		// Tab не переключает в preview — режим preview отключен в UI.
-		// Можно использовать Tab для других целей при желании.
+		// Переключаем между режимами редактирования и предпросмотра
+		if a.activePanel == "right" {
+			a.toggleMode()
+		}
 	case tcell.KeyCtrlT:
 		a.toggleTerminal() // новый вызов терминала
 	}
