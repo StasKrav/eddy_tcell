@@ -974,9 +974,9 @@ func (a *App) drawTextEditor() {
 
 	lines := a.getLines()
 	// Учитываем отступ здесь
-	startX := a.leftWidth + 1 + textEditorPadding // <<--- ИЗМЕНЕНИЕ ЗДЕСЬ
+	startX := a.leftWidth + 1 + textEditorPadding
 	startY := 2
-	editorWidth := a.width - a.leftWidth - 2 - textEditorPadding // <<--- ИЗМЕНЕНИЕ ЗДЕСЬ
+	editorWidth := a.width - a.leftWidth - 2 - textEditorPadding
 	editorHeight := a.height - 5
 	if editorWidth < 1 {
 		editorWidth = 1
@@ -1058,8 +1058,8 @@ func (a *App) drawTextEditor() {
 			// Обычная отрисовка без подсветки синтаксиса
 			runes := []rune(line)
 			// Итерируем по runes, начиная с rune-индекса scrollX
-			for k := a.scrollX; k < len(runes); k++ { // Итерируем по всем rune
-				if col >= editorWidth { // Если достигли края экрана, прекращаем отрисовку строки (было ==, лучше >=)
+			for k := a.scrollX; k < len(runes); k++ {
+				if col >= editorWidth {
 					break
 				}
 				r := runes[k]
@@ -1092,6 +1092,34 @@ func (a *App) drawTextEditor() {
 			}
 		}
 	}
+
+	// --- управление реальным курсором терминала ---
+	// Показываем терминальный курсор, если правая панель активна и курсор внутри видимой области редактора.
+	if a.activePanel == "right" {
+		if a.editY >= a.scrollY && a.editY < a.scrollY+editorHeight {
+			// Получаем строку (если её нет, считаем пустой)
+			var line string
+			if a.editY < len(lines) {
+				line = lines[a.editY]
+			} else {
+				line = ""
+			}
+			cursorDisp := runesDisplayWidth([]rune(line), a.editX)
+			scrollDisp := runesDisplayWidth([]rune(line), a.scrollX)
+			cursorX := startX + (cursorDisp - scrollDisp)
+			cursorY := startY + (a.editY - a.scrollY)
+			if cursorX >= startX && cursorX < startX+editorWidth && cursorY >= startY && cursorY < startY+editorHeight {
+				a.screen.ShowCursor(cursorX, cursorY)
+			} else {
+				a.screen.HideCursor()
+			}
+		} else {
+			a.screen.HideCursor()
+		}
+	} else {
+		a.screen.HideCursor()
+	}
+
 }
 
 // Отрисовка предпросмотра (осталась, но не используется по умолчанию)
