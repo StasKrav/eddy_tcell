@@ -5,27 +5,174 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
+	"sync"
+	"time"
 
+	"github.com/BurntSushi/toml"
+	"github.com/fsnotify/fsnotify"
 	"github.com/gdamore/tcell/v2"
 	"github.com/mattn/go-runewidth"
 )
 
-// Цветовые константы
+// ---- НОВОЕ: структура темы (TOML) ----
+//
+// Файл темы: ~/.config/myapp/theme.toml
+//
+// Пример (минимальный):
+//
+// [ui]
+// background = "#0f1117"
+// foreground = "#c9d1d9"
+// accent = "#58a6ff"
+// cursor = "#ffcc00"
+// selection_bg = "#223244"
+//
+// [ui.left_panel]
+// fg = "#c9d1d9"
+// bg = "#111217"
+// selected_fg = "#0f1724"
+// selected_bg = "#58a6ff"
+// selected_bold = true
+//
+// [ui.right_panel]
+// fg = "#c9d1d9"
+// bg = "#0f1117"
+//
+// [ui.statusbar]
+// fg = "#9aa4b2"
+// bg = "#0b1220"
+//
+// [markdown.h1]
+// fg = "#ff7ab6"
+// bold = true
+//
+// [markdown.inline_code]
+// fg = "#111827"
+// bg = "#f8fafc"
+//
+// …и т.д.
+//
+// Полная схема реализована в типах ниже.
+
+// StyleSpec описывает стиль для одного элемента
+type StyleSpec struct {
+	FG        string `toml:"fg" json:"fg"`
+	BG        string `toml:"bg" json:"bg"`
+	Bold      bool   `toml:"bold" json:"bold"`
+	Italic    bool   `toml:"italic" json:"italic"`
+	Underline bool   `toml:"underline" json:"underline"`
+	Reverse   bool   `toml:"reverse" json:"reverse"`
+}
+
+// PanelStyle — отдельный тип для панелей, с опциями для выделения
+type PanelStyle struct {
+	FG           string `toml:"fg"`
+	BG           string `toml:"bg"`
+	SelectedFG   string `toml:"selected_fg"`
+	SelectedBG   string `toml:"selected_bg"`
+	SelectedBold bool   `toml:"selected_bold"`
+}
+
+// UITheme — общие цвета приложения
+type UITheme struct {
+	Background  string     `toml:"background"`
+	Foreground  string     `toml:"foreground"`
+	Accent      string     `toml:"accent"`
+	Cursor      string     `toml:"cursor"`
+	SelectionBG string     `toml:"selection_bg"`
+	LeftPanel   PanelStyle `toml:"left_panel"`
+	RightPanel  PanelStyle `toml:"right_panel"`
+	Statusbar   StyleSpec  `toml:"statusbar"`
+}
+
+// MarkdownTheme — стили Markdown
+type MarkdownTheme struct {
+	H1         StyleSpec `toml:"h1"`
+	H2         StyleSpec `toml:"h2"`
+	H3         StyleSpec `toml:"h3"`
+	InlineCode StyleSpec `toml:"inline_code"`
+	CodeBlock  StyleSpec `toml:"codeblock"`
+	Link       StyleSpec `toml:"link"`
+	ListMarker StyleSpec `toml:"list_marker"`
+	Blockquote StyleSpec `toml:"blockquote"`
+	Table      struct {
+		Header StyleSpec `toml:"header"`
+		Border string    `toml:"border"`
+	} `toml:"table"`
+	HR StyleSpec `toml:"hr"`
+}
+
+// Theme — корневая структура
+type Theme struct {
+	UI       UITheme       `toml:"ui"`
+	Markdown MarkdownTheme `toml:"markdown"`
+}
+
+// дефолтная тема (fallback)
+var defaultTheme = Theme{
+	UI: UITheme{
+		Background:  "#0f1117",
+		Foreground:  "#c9d1d9",
+		Accent:      "#88d4ab",
+		Cursor:      "#ffcc00",
+		SelectionBG: "#223244",
+		LeftPanel: PanelStyle{
+			FG:           "#444444",
+			BG:           "#111217",
+			SelectedFG:   "#111111",
+			SelectedBG:   "#999999",
+			SelectedBold: true,
+		},
+		RightPanel: PanelStyle{
+			FG: "#c9d1d9",
+			BG: "#0f1117",
+		},
+		Statusbar: StyleSpec{
+			FG: "#9aa4b2",
+			BG: "#0b1220",
+		},
+	},
+	Markdown: MarkdownTheme{
+		H1: StyleSpec{FG: "#ff7ab6", Bold: false},
+		H2: StyleSpec{FG: "#ff9f43"},
+		H3: StyleSpec{FG: "#ffd166", Bold: true},
+		InlineCode: StyleSpec{
+			FG: "#111827", BG: "#333234",
+		},
+		CodeBlock: StyleSpec{
+			FG: "#ff9999", BG: "#333234",
+		},
+		Link:       StyleSpec{FG: "#58a6ff", Underline: true},
+		ListMarker: StyleSpec{FG: "#9aa4b2", Bold: true},
+		Blockquote: StyleSpec{FG: "#94a3b8", Italic: true},
+		Table: struct {
+			Header StyleSpec `toml:"header"`
+			Border string    `toml:"border"`
+		}{
+			Header: StyleSpec{FG: "#e6edf3"},
+			Border: "#3b4252",
+		},
+		HR: StyleSpec{FG: "#3b4252"},
+	},
+}
+
+// ---- конец темы ----
+
+// старые цветовые константы — оставлены как запасной вариант
 const (
-	ColorGrey = tcell.ColorGrey // Цвет рамки левой панели
-	ColorRed  = tcell.ColorRed  // Цвет заголовка левой панели и фона выделенного элемента
-	//  ColorBlue      = tcell.ColorYellow    // Цвет директорий и ключевых слов Go
-	//  ColorGreen     = tcell.ColorGreen     // Цвет заголовка правой панели и комментариев
-	ColorYellow    = tcell.ColorYellow    // Цвет строк в коде / строки
-	ColorWhite     = tcell.ColorWhite     // Базовый цвет текста
-	ColorAqua      = tcell.ColorAqua      // Цвет типов (если нужно)
-	ColorFuchsia   = tcell.ColorFuchsia   // Цвет чисел (если нужно)
-	ColorGray      = tcell.ColorGray      // Цвет статусной строки и списков
-	ColorOlive     = tcell.ColorOlive     // Цвет заголовков третьего уровня в предпросмотре
-	ColorLightBlue = tcell.ColorLightBlue // Цвет ссылок в предпросмотре
-	ColorLightGrey = tcell.ColorLightGrey // Цвет маркеров списков в предпросмотре
-	ColorBlack     = tcell.ColorBlack     // Цвет фона строк и курсора
+	ColorGrey      = tcell.ColorGrey
+	ColorRed       = tcell.ColorRed
+	ColorYellow    = tcell.ColorYellow
+	ColorWhite     = tcell.ColorWhite
+	ColorAqua      = tcell.ColorAqua
+	ColorFuchsia   = tcell.ColorFuchsia
+	ColorGray      = tcell.ColorGray
+	ColorOlive     = tcell.ColorOlive
+	ColorLightBlue = tcell.ColorLightBlue
+	ColorLightGrey = tcell.ColorLightGrey
+	ColorBlack     = tcell.ColorBlack
 )
 
 var (
@@ -68,6 +215,13 @@ type App struct {
 
 	// Размеры панелей
 	leftWidth int
+
+	// тема и мьютекс для безопасного доступа
+	theme   *Theme
+	themeMu sync.RWMutex
+
+	// watcher для темы
+	themeWatcher *fsnotify.Watcher
 }
 
 // Тип токена для подсветки (остался если понадобится)
@@ -76,7 +230,215 @@ type hlToken struct {
 	style tcell.Style
 }
 
-// Инициализация приложения
+// Получить путь к файлу темы: ~/.config/myapp/theme.toml
+func themePath() string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		// fallback — текущая директория
+		return "./theme.toml"
+	}
+	return filepath.Join(home, ".config", "myapp", "theme.toml")
+}
+
+// ---- Парсинг цвета (hex + числа + имена) ----
+func parseColor(s string) tcell.Color {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return tcell.ColorDefault
+	}
+	// hex #RRGGBB
+	if strings.HasPrefix(s, "#") {
+		hex := strings.TrimPrefix(s, "#")
+		// поддерживаем 3- и 6-значный формат
+		if len(hex) == 3 {
+			// expand e.g. "abc" -> "aabbcc"
+			expanded := ""
+			for _, ch := range hex {
+				expanded += string(ch) + string(ch)
+			}
+			hex = expanded
+		}
+		if len(hex) == 6 {
+			v, err := strconv.ParseInt(hex, 16, 32)
+			if err == nil {
+				return tcell.NewHexColor(int32(v))
+			}
+		}
+	}
+
+	// числовой (0..255)
+	if n, err := strconv.Atoi(s); err == nil {
+		return tcell.Color(n)
+	}
+
+	// имена (несколько базовых)
+	switch strings.ToLower(s) {
+	case "black":
+		return tcell.ColorBlack
+	case "red":
+		return tcell.ColorRed
+	case "green":
+		return tcell.ColorGreen
+	case "yellow":
+		return tcell.ColorYellow
+	case "blue":
+		return tcell.ColorBlue
+	case "magenta", "purple":
+		return tcell.ColorPurple
+	case "cyan", "teal":
+		return tcell.ColorTeal
+	case "white":
+		return tcell.ColorWhite
+	case "gray", "grey":
+		return tcell.ColorGrey
+	}
+
+	return tcell.ColorDefault
+
+}
+
+// Преобразование StyleSpec -> tcell.Style (с использованием UI-фоллбеков)
+func styleFromSpec(spec StyleSpec, ui UITheme) tcell.Style {
+	style := tcell.StyleDefault
+
+	// fg
+	fg := spec.FG
+	if fg == "" {
+		fg = ui.Foreground
+	}
+	if fg != "" {
+		style = style.Foreground(parseColor(fg))
+	}
+
+	// bg
+	bg := spec.BG
+	if bg == "" {
+		bg = ui.Background
+	}
+	if bg != "" {
+		style = style.Background(parseColor(bg))
+	}
+
+	if spec.Bold {
+		style = style.Bold(true)
+	}
+	if spec.Italic {
+		style = style.Italic(true)
+	}
+	if spec.Underline {
+		style = style.Underline(true)
+	}
+	if spec.Reverse {
+		style = style.Reverse(true)
+	}
+	return style
+
+}
+
+// ---- Загрузка и применение темы ----
+func loadThemeFromFile(path string) (*Theme, error) {
+	var t Theme
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		return nil, fmt.Errorf("theme not found")
+	}
+	if _, err := toml.DecodeFile(path, &t); err != nil {
+		return nil, err
+	}
+	return &t, nil
+}
+
+func (a *App) applyTheme(t *Theme) {
+	a.themeMu.Lock()
+	defer a.themeMu.Unlock()
+	if t == nil {
+		// если nil — используем дефолтную
+		a.theme = &defaultTheme
+	} else {
+		a.theme = t
+	}
+}
+
+// загрузка темы: если нет файла — дефолт
+func (a *App) loadTheme() {
+	path := themePath()
+	t, err := loadThemeFromFile(path)
+	if err != nil {
+		// используем дефолт
+		a.applyTheme(&defaultTheme)
+		return
+	}
+	a.applyTheme(t)
+}
+
+// Релоад темы (вызов из хоткея)
+func (a *App) reloadTheme() {
+	// пробуем загрузить; если ошибка — не крашим приложение, оставляем старую тему
+	path := themePath()
+	t, err := loadThemeFromFile(path)
+	if err != nil {
+		// можно вывести уведомление — пока просто вернёмся к дефолту
+		a.applyTheme(&defaultTheme)
+	} else {
+		a.applyTheme(t)
+	}
+	// попросим tcell перерисовать экран
+	if a.screen != nil {
+		a.screen.Sync()
+	}
+}
+
+// Наблюдатель за файлом темы (fsnotify). Работает в отдельной горутине.
+// Смотрим за директорией, где лежит файл, т.к. иногда файл перезаписывают через tmp-файл.
+func (a *App) watchThemeFile() error {
+	path := themePath()
+	dir := filepath.Dir(path)
+
+	w, err := fsnotify.NewWatcher()
+	if err != nil {
+		return err
+	}
+	a.themeWatcher = w
+
+	// Добавляем watcher на директорию
+	if err := w.Add(dir); err != nil {
+		// если не удалось — всё равно продолжаем (приложение будет работать без hot-reload)
+		go func() {
+			// закрываем watcher через некоторое время, чтобы не утекал
+			time.Sleep(10 * time.Millisecond)
+			_ = w.Close()
+		}()
+		return err
+	}
+
+	go func() {
+		defer w.Close()
+		for {
+			select {
+			case ev, ok := <-w.Events:
+				if !ok {
+					return
+				}
+				// интересуют изменения конкретного файла
+				if filepath.Clean(ev.Name) == filepath.Clean(path) {
+					// WRITE, CREATE, REMOVE, RENAME — в любом случае пробуем перезагрузить тему
+					if ev.Op&(fsnotify.Write|fsnotify.Create|fsnotify.Remove|fsnotify.Rename) != 0 {
+						a.reloadTheme()
+					}
+				}
+			case err, ok := <-w.Errors:
+				if !ok {
+					return
+				}
+				_ = err
+			}
+		}
+	}()
+
+	return nil
+
+}
+
+// ---- Инициализация приложения (NewApp) ----
 func NewApp() (*App, error) {
 	screen, err := tcell.NewScreen()
 	if err != nil {
@@ -103,12 +465,18 @@ func NewApp() (*App, error) {
 		scrollX:      0,
 		scrollY:      0,
 		leftWidth:    30,
+		theme:        &defaultTheme,
 	}
 
 	// Получаем текущую директорию
 	if cwd, err := os.Getwd(); err == nil {
 		app.currentDir = cwd
 	}
+
+	// Загружаем тему (если есть)
+	app.loadTheme()
+	// пытаемся включить watch (если не удастся — приложение всё равно рабочее)
+	_ = app.watchThemeFile()
 
 	app.loadFiles()
 	return app, nil
@@ -303,12 +671,13 @@ Delete - удалить файл (в левой панели)
 . - показать/скрыть скрытые файлы
 ? - показать справку
 Ctrl+Q - выйти
+Ctrl+R - перезагрузить тему
 
 
 ИНДИКАТОРЫ:
 
 
-- в заголовке редактора означает, что файл был изменен, но еще не сохранен
+в заголовке редактора означает, что файл был изменен, но еще не сохранен
 
 ПРЕДПРОСМОТР:
 Файлы .md/.markdown открываются по умолчанию в режиме Preview (Tab переключает режим)
@@ -485,7 +854,7 @@ func (a *App) ensureCursorVisible() {
 		// смещаем scrollX в rune-индекс равный editX
 		a.scrollX = a.editX
 	} else if cursorDisp >= scrollDisp+editorWidth {
-		// нужно подобрать новое scrollX (rune-индекс) так, чтобы курсор поместился
+		// нужно подобрать новое scrollX (rune-индекс) так, чтобы курсор поместится
 		// минимально уменьшаем scrollX
 		newScroll := a.editX
 		// двигаемся назад, пока отображаемая ширина от newScroll до editX больше нужной
@@ -505,6 +874,13 @@ func (a *App) ensureCursorVisible() {
 		a.scrollX = 0
 	}
 
+}
+
+// Получить текущую тему (копия указателя под RLock)
+func (a *App) getTheme() *Theme {
+	a.themeMu.RLock()
+	defer a.themeMu.RUnlock()
+	return a.theme
 }
 
 // Отрисовка интерфейса
@@ -529,20 +905,30 @@ func (a *App) draw() {
 
 // Отрисовка списка файлов
 func (a *App) drawFileList() {
-	// Рамка левой панели
+	theme := a.getTheme()
+
+	// Цвет рамки слева — используем left panel fg или общий foreground
+	borderColor := parseColor(theme.UI.LeftPanel.FG)
+	if borderColor == tcell.ColorDefault {
+		borderColor = parseColor(theme.UI.Foreground)
+	}
 	for y := 0; y < a.height-3; y++ {
-		a.screen.SetContent(a.leftWidth, y, '│', nil, tcell.StyleDefault.Foreground(ColorGrey))
+		a.screen.SetContent(a.leftWidth, y, '│', nil, tcell.StyleDefault.Foreground(borderColor))
 	}
 
 	// Заголовок
 	title := "Files"
 	col := 0
+	titleColor := parseColor(theme.UI.Accent)
+	if titleColor == tcell.ColorDefault {
+		titleColor = parseColor(theme.UI.Foreground)
+	}
 	for _, r := range title {
 		w := runewidth.RuneWidth(r)
 		if col >= a.leftWidth-2 {
 			break
 		}
-		a.screen.SetContent(col+1, 0, r, nil, tcell.StyleDefault.Foreground(ColorRed).Bold(true))
+		a.screen.SetContent(col+1, 0, r, nil, tcell.StyleDefault.Foreground(titleColor).Bold(true))
 		col += w
 	}
 
@@ -563,14 +949,27 @@ func (a *App) drawFileList() {
 		// Выделяем текущий элемент
 		style := tcell.StyleDefault
 		if i == a.cursor && a.activePanel == "left" {
-			style = style.Background(ColorRed).Foreground(ColorBlack)
+			// применяем selected из темы
+			sfg := theme.UI.LeftPanel.SelectedFG
+			sbg := theme.UI.LeftPanel.SelectedBG
+			if sfg == "" {
+				sfg = "#000000"
+			}
+			if sbg == "" {
+				sbg = theme.UI.Accent
+			}
+			style = style.Foreground(parseColor(sfg)).Background(parseColor(sbg))
+			if theme.UI.LeftPanel.SelectedBold {
+				style = style.Bold(true)
+			}
 		}
 
 		// Имя файла
 		name := file.name
 		if file.isDir {
 			name += "/"
-			style = style.Foreground(ColorBlue)
+			// цвет директорий — accent
+			style = style.Foreground(parseColor(theme.UI.Accent))
 		}
 
 		// Обрезаем имя если слишком длинное (учитываем видимую ширину)
@@ -592,6 +991,8 @@ func (a *App) drawFileList() {
 
 // Отрисовка редактора
 func (a *App) drawEditor() {
+	theme := a.getTheme()
+
 	// Заголовок правой панели
 	title := "  Editor"
 	if a.mode == "preview" {
@@ -608,12 +1009,17 @@ func (a *App) drawEditor() {
 		maxTitleCols = 0
 	}
 	col := 0
+	// цвет заголовка правой панели — берем RightPanel FG или общий Foreground
+	titleColor := parseColor(theme.UI.RightPanel.FG)
+	if titleColor == tcell.ColorDefault {
+		titleColor = parseColor(theme.UI.Foreground)
+	}
 	for _, r := range title {
 		w := runewidth.RuneWidth(r)
 		if col >= maxTitleCols {
 			break
 		}
-		a.screen.SetContent(a.leftWidth+1+col, 0, r, nil, tcell.StyleDefault.Foreground(ColorGreen).Bold(true))
+		a.screen.SetContent(a.leftWidth+1+col, 0, r, nil, tcell.StyleDefault.Foreground(titleColor).Bold(true))
 		col += w
 	}
 
@@ -644,6 +1050,8 @@ func (a *App) drawTextEditor() {
 		editorHeight = 1
 	}
 
+	theme := a.getTheme()
+
 	for i := 0; i < editorHeight; i++ {
 		lineIdx := a.scrollY + i
 		y := startY + i
@@ -656,7 +1064,7 @@ func (a *App) drawTextEditor() {
 				cursorY := y
 				// Если курсор на пустой строке, но не в первой позиции, нарисуем курсор-пробел
 				if cursorX >= startX && cursorX < startX+editorWidth && cursorY == y {
-					a.screen.SetContent(cursorX, cursorY, ' ', nil, tcell.StyleDefault.Background(ColorWhite).Foreground(ColorBlack))
+					a.screen.SetContent(cursorX, cursorY, ' ', nil, tcell.StyleDefault.Background(parseColor(theme.UI.Cursor)).Foreground(parseColor(theme.UI.RightPanel.FG)))
 				}
 			}
 			continue // Продолжаем рисовать "пустые строки" или фон, но не содержимое.
@@ -680,7 +1088,7 @@ func (a *App) drawTextEditor() {
 
 			// Если это активный курсор, инвертируем цвет текущего символа
 			if a.activePanel == "right" && lineIdx == a.editY && k == a.editX {
-				style = style.Background(ColorWhite).Foreground(ColorBlack)
+				style = style.Background(parseColor(theme.UI.Cursor)).Foreground(parseColor(theme.UI.RightPanel.FG))
 			}
 			// Здесь startX уже содержит textEditorPadding
 			a.screen.SetContent(startX+col, y, r, nil, style)
@@ -696,7 +1104,7 @@ func (a *App) drawTextEditor() {
 			scrollDisp := runesDisplayWidth(runes, a.scrollX)
 			cursorX := startX + (cursorDisp - scrollDisp)
 			if cursorX >= startX && cursorX < startX+editorWidth {
-				a.screen.SetContent(cursorX, y, ' ', nil, tcell.StyleDefault.Background(ColorWhite).Foreground(ColorBlack)) // рисуем инвертированный пробел
+				a.screen.SetContent(cursorX, y, ' ', nil, tcell.StyleDefault.Background(parseColor(theme.UI.Cursor)).Foreground(parseColor(theme.UI.RightPanel.FG))) // рисуем инвертированный пробел
 			}
 		}
 	}
@@ -745,6 +1153,8 @@ func (a *App) drawPreview() {
 		editorHeight = 1
 	}
 
+	theme := a.getTheme()
+
 	inCodeBlock := false
 	// регулярка для списков: -, +, * или N.
 	listRe := regexp.MustCompile(`^\s*([-+*]|\d+\.)\s+`)
@@ -767,21 +1177,21 @@ func (a *App) drawPreview() {
 			continue
 		}
 
-		// default base style
-		baseStyle := tcell.StyleDefault.Foreground(ColorWhite)
+		// default base style: используем общий foreground
+		baseStyle := tcell.StyleDefault.Foreground(parseColor(theme.UI.Foreground))
 
 		// decide line-level style and possibly trim prefixes
 		if inCodeBlock {
-			baseStyle = tcell.StyleDefault.Foreground(ColorYellow).Background(ColorBlack)
+			baseStyle = styleFromSpec(theme.Markdown.CodeBlock, theme.UI)
 		} else if strings.HasPrefix(trim, "# ") {
 			trim = strings.TrimPrefix(trim, "# ")
-			baseStyle = tcell.StyleDefault.Foreground(ColorGreen).Bold(true)
+			baseStyle = styleFromSpec(theme.Markdown.H1, theme.UI)
 		} else if strings.HasPrefix(trim, "## ") {
 			trim = strings.TrimPrefix(trim, "## ")
-			baseStyle = tcell.StyleDefault.Foreground(ColorGreen).Bold(true)
+			baseStyle = styleFromSpec(theme.Markdown.H2, theme.UI)
 		} else if strings.HasPrefix(trim, "### ") {
 			trim = strings.TrimPrefix(trim, "### ")
-			baseStyle = tcell.StyleDefault.Foreground(ColorOlive).Bold(true)
+			baseStyle = styleFromSpec(theme.Markdown.H3, theme.UI)
 		} else if strings.HasPrefix(strings.TrimLeft(trim, " "), "> ") {
 			// blockquote, keep indentation
 			// remove one leading '>' if present after spaces
@@ -789,10 +1199,10 @@ func (a *App) drawPreview() {
 			if idx >= 0 {
 				trim = strings.TrimSpace(trim[idx+2:])
 			}
-			baseStyle = tcell.StyleDefault.Foreground(ColorBlue).Italic(true)
+			baseStyle = styleFromSpec(theme.Markdown.Blockquote, theme.UI)
 		} else if listRe.MatchString(trim) {
 			// don't strip marker completely; will color marker when rendering
-			baseStyle = tcell.StyleDefault.Foreground(ColorGray)
+			baseStyle = styleFromSpec(theme.Markdown.ListMarker, theme.UI)
 		}
 
 		// render line rune-by-rune with inline parsing for `code`, *em* and links
@@ -845,13 +1255,13 @@ func (a *App) drawPreview() {
 						linkText := runes[idx+1 : closeIdx]
 						// Применяем горизонтальную прокрутку к тексту ссылки
 						linkCol := 0
+						linkStyle := styleFromSpec(theme.Markdown.Link, theme.UI)
 						for k := 0; k < len(linkText) && linkCol < editorWidth-col; k++ {
 							lr := linkText[k]
 							w := runewidth.RuneWidth(lr)
 							if linkCol+w > editorWidth-col {
 								break
 							}
-							linkStyle := baseStyle.Foreground(ColorLightBlue).Underline(true)
 							a.screen.SetContent(startX+col+linkCol, y, lr, nil, linkStyle)
 							linkCol += w
 						}
@@ -866,7 +1276,7 @@ func (a *App) drawPreview() {
 			// choose style for this rune
 			curStyle := baseStyle
 			if inInlineCode {
-				curStyle = tcell.StyleDefault.Foreground(ColorBlack).Background(ColorWhite)
+				curStyle = styleFromSpec(theme.Markdown.InlineCode, theme.UI)
 			} else if inEmphasis {
 				curStyle = curStyle.Bold(true)
 			}
@@ -874,7 +1284,7 @@ func (a *App) drawPreview() {
 			// special: color list marker differently if at line start
 			// Учитываем смещение при горизонтальной прокрутке
 			if (r == '-' || r == '+' || r == '*') && idx == 0 && listRe.MatchString(string(runes)) {
-				curStyle = tcell.StyleDefault.Foreground(ColorLightGrey).Bold(true)
+				curStyle = styleFromSpec(theme.Markdown.ListMarker, theme.UI)
 			}
 
 			w := runewidth.RuneWidth(r)
@@ -891,13 +1301,14 @@ func (a *App) drawPreview() {
 // Отрисовка статусной строки
 func (a *App) drawStatus() {
 	y := a.height - 1
+	theme := a.getTheme()
 
 	// Определяем цвет для активной панели
-	panelColor := ColorGray
+	panelColor := parseColor(theme.UI.Foreground)
 	if a.activePanel == "left" {
-		panelColor = ColorBlue
+		panelColor = parseColor(theme.UI.LeftPanel.FG)
 	} else {
-		panelColor = ColorGreen
+		panelColor = parseColor(theme.UI.RightPanel.FG)
 	}
 
 	// Формируем статусную строку с фиксированной шириной для панели и режима
@@ -913,7 +1324,7 @@ func (a *App) drawStatus() {
 		if col >= a.width {
 			break
 		}
-		style := tcell.StyleDefault.Foreground(ColorGray)
+		style := tcell.StyleDefault.Foreground(parseColor(theme.UI.Statusbar.FG))
 		// Проверяем, находится ли символ в области панели
 		if col >= panelStart && col < panelStart+5 {
 			style = style.Foreground(panelColor).Bold(true)
@@ -921,11 +1332,11 @@ func (a *App) drawStatus() {
 		// Проверяем, находится ли символ в области режима
 		if col >= modeStart && col < modeStart+8 {
 			// Определяем цвет для активного режима
-			color := ColorGray
+			color := parseColor(theme.UI.Statusbar.FG)
 			if a.mode == "edit" {
-				color = ColorBlue
+				color = parseColor(theme.UI.RightPanel.FG)
 			} else {
-				color = ColorGreen
+				color = parseColor(theme.UI.LeftPanel.FG)
 			}
 			style = style.Foreground(color).Bold(true)
 		}
@@ -1026,6 +1437,9 @@ func (a *App) handleKey(ev *tcell.EventKey) {
 		}
 	case tcell.KeyCtrlT:
 		a.toggleTerminal() // новый вызов терминала
+	case tcell.KeyCtrlR:
+		// перезагрузка темы вручную
+		a.reloadTheme()
 	}
 
 	// Переключение панелей Ctrl+стрелки
