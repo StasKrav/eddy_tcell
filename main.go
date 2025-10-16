@@ -3,13 +3,34 @@ package main
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/mattn/go-runewidth"
+)
+
+// Цветовые константы
+const (
+	ColorGrey = tcell.ColorGrey // Цвет рамки левой панели
+	ColorRed  = tcell.ColorRed  // Цвет заголовка левой панели и фона выделенного элемента
+	//  ColorBlue      = tcell.ColorYellow    // Цвет директорий и ключевых слов Go
+	//  ColorGreen     = tcell.ColorGreen     // Цвет заголовка правой панели и комментариев
+	ColorYellow    = tcell.ColorYellow    // Цвет строк в коде / строки
+	ColorWhite     = tcell.ColorWhite     // Базовый цвет текста
+	ColorAqua      = tcell.ColorAqua      // Цвет типов (если нужно)
+	ColorFuchsia   = tcell.ColorFuchsia   // Цвет чисел (если нужно)
+	ColorGray      = tcell.ColorGray      // Цвет статусной строки и списков
+	ColorOlive     = tcell.ColorOlive     // Цвет заголовков третьего уровня в предпросмотре
+	ColorLightBlue = tcell.ColorLightBlue // Цвет ссылок в предпросмотре
+	ColorLightGrey = tcell.ColorLightGrey // Цвет маркеров списков в предпросмотре
+	ColorBlack     = tcell.ColorBlack     // Цвет фона строк и курсора
+)
+
+var (
+	ColorBlue  = tcell.NewRGBColor(196, 110, 81)
+	ColorGreen = tcell.NewRGBColor(93, 93, 93)
 )
 
 // Структура для хранения информации о файле
@@ -49,7 +70,7 @@ type App struct {
 	leftWidth int
 }
 
-// Тип токена для подсветки
+// Тип токена для подсветки (остался если понадобится)
 type hlToken struct {
 	text  string
 	style tcell.Style
@@ -91,6 +112,7 @@ func NewApp() (*App, error) {
 
 	app.loadFiles()
 	return app, nil
+
 }
 
 // Загрузка файлов из текущей директории
@@ -115,6 +137,7 @@ func (a *App) loadFiles() {
 			isDir: entry.IsDir(),
 		})
 	}
+
 }
 
 // Открытие выбранного файла или директории
@@ -136,9 +159,10 @@ func (a *App) openSelected() {
 		a.openFile(file.path)
 		a.activePanel = "right"
 	}
+
 }
 
-// Открытие файла для редактирования
+// Открытие файла для редактирования/предпросмотра
 func (a *App) openFile(path string) {
 	content, err := os.ReadFile(path)
 	if err != nil {
@@ -154,6 +178,15 @@ func (a *App) openFile(path string) {
 	a.scrollX = 0
 	a.scrollY = 0
 	a.clampCursor()
+
+	// Если markdown - открываем в режиме preview по умолчанию
+	low := strings.ToLower(path)
+	if strings.HasSuffix(low, ".md") || strings.HasSuffix(low, ".markdown") {
+		a.mode = "preview"
+	} else {
+		a.mode = "edit"
+	}
+
 }
 
 // Удаление выбранного файла
@@ -184,50 +217,7 @@ func (a *App) deleteFile() {
 	if a.cursor >= len(a.files) && len(a.files) > 0 {
 		a.cursor = len(a.files) - 1
 	}
-}
 
-// Форматирование кода с помощью gofmt
-func (a *App) formatWithGofmt() {
-	if a.currentFile == "" || !a.isGoFile() {
-		return
-	}
-
-	// Создаем временную команду для форматирования
-	cmd := exec.Command("gofmt")
-	cmd.Stdin = strings.NewReader(a.fileContent)
-	output, err := cmd.Output()
-
-	if err != nil {
-		// В случае ошибки форматирования, можно показать уведомление
-		// Пока просто возвращаемся без изменений
-		return
-	}
-
-	// Обновляем содержимое файла отформатированным текстом
-	a.fileContent = string(output)
-	a.fileModified = true
-}
-
-// Форматирование кода с помощью goimports
-func (a *App) formatWithGoimports() {
-	if a.currentFile == "" || !a.isGoFile() {
-		return
-	}
-
-	// Создаем временную команду для форматирования
-	cmd := exec.Command("goimports")
-	cmd.Stdin = strings.NewReader(a.fileContent)
-	output, err := cmd.Output()
-
-	if err != nil {
-		// В случае ошибки форматирования, можно показать уведомление
-		// Пока просто возвращаемся без изменений
-		return
-	}
-
-	// Обновляем содержимое файла отформатированным текстом
-	a.fileContent = string(output)
-	a.fileModified = true
 }
 
 // Сохранение текущего файла
@@ -248,6 +238,7 @@ func (a *App) saveFile() {
 
 	// Перерисовываем интерфейс, чтобы обновить индикатор изменений
 	a.draw()
+
 }
 
 // Переключение активной панели
@@ -289,35 +280,41 @@ func (a *App) showHelp() {
 	// Простая реализация справки
 	helpText := `Справка по горячим клавишам:
 
+
 НАВИГАЦИЯ:
 ↑/↓ - перемещение по списку файлов
 → - открыть файл/папку
 ← - вернуться в родительскую папку
 Enter - открыть выбранный элемент
 
+
 ПЕРЕКЛЮЧЕНИЕ ПАНЕЛЕЙ:
 Ctrl+← - переключить на левую панель
 Ctrl+→ - переключить на правую панель
 
+
 РЕДАКТИРОВАНИЕ:
 Tab - переключить режим редактирования/предпросмотра
 Ctrl+S - сохранить файл
-Ctrl+F - форматировать код с помощью gofmt
-Ctrl+G - форматировать код с помощью goimports
 Delete - удалить файл (в левой панели)
+
 
 ПРОЧЕЕ:
 . - показать/скрыть скрытые файлы
 ? - показать справку
 Ctrl+Q - выйти
 
+
 ИНДИКАТОРЫ:
-* - в заголовке редактора означает, что файл был изменен, но еще не сохранен
 
-ПОДСВЕТКА СИНТАКСА:
-Автоматическая подсветка синтаксиса для файлов Go (.go)
 
-Нажмите любую клавишу для закрытия справки...`
+- в заголовке редактора означает, что файл был изменен, но еще не сохранен
+
+ПРЕДПРОСМОТР:
+Файлы .md/.markdown открываются по умолчанию в режиме Preview (Tab переключает режим)
+
+
+Нажмите любую клавишу для закрытия справки…`
 
 	// Временно заменяем содержимое на справку
 	oldContent := a.fileContent
@@ -338,6 +335,7 @@ Ctrl+Q - выйти
 	a.fileContent = oldContent
 	a.activePanel = oldActive
 	a.draw()
+
 }
 
 // Получить строки (гарантированно хотя бы одна)
@@ -352,9 +350,61 @@ func (a *App) getLines() []string {
 	return lines
 }
 
-// Проверить, является ли файл Go файлом
-func (a *App) isGoFile() bool {
-	return strings.HasSuffix(a.currentFile, ".go")
+// Проверить, является ли файл Markdown файлом
+func (a *App) isMarkdownFile() bool {
+	low := strings.ToLower(a.currentFile)
+	return strings.HasSuffix(low, ".md") || strings.HasSuffix(low, ".markdown")
+}
+
+// Получить последнее слово в строке
+func (a *App) getLastWord(line string) string {
+	// Удаляем пробелы в конце строки
+	trimmed := strings.TrimRight(line, " \t")
+
+	// Находим начало последнего слова (ищем любой символ, не являющийся буквой, цифрой или подчеркиванием)
+	end := len(trimmed)
+	for i := len(trimmed) - 1; i >= 0; i-- {
+		r := rune(trimmed[i])
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' {
+			continue
+		} else {
+			// Нашли разделитель, возвращаем часть строки после него
+			return trimmed[i+1 : end]
+		}
+	}
+
+	// Вся строка состоит из одного слова
+	return trimmed
+
+}
+
+// Проверить, является ли символ разделителем
+func (a *App) isWordSeparator(r rune) bool {
+	return !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_')
+}
+
+// Получить текущий уровень отступа строки
+func (a *App) getCurrentIndentLevel(line string) int {
+	indent := 0
+	for _, r := range line {
+		if r == '\t' {
+			indent++
+		} else if r == ' ' {
+			// Считаем 4 пробела как 1 табуляцию
+			indent++
+			// Пропускаем еще 3 пробела
+			// Но для этого нужно модифицировать логику
+		} else {
+			break
+		}
+	}
+	return indent
+}
+
+// Создать строку отступа заданного уровня
+func (a *App) createIndentString(level int) string {
+	// Используем табуляции для отступов
+	return strings.Repeat("\t", level)
 }
 
 // Установить строки обратно в fileContent
@@ -454,6 +504,7 @@ func (a *App) ensureCursorVisible() {
 	if a.scrollX < 0 {
 		a.scrollX = 0
 	}
+
 }
 
 // Отрисовка интерфейса
@@ -473,13 +524,14 @@ func (a *App) draw() {
 	a.drawStatus()
 
 	a.screen.Show()
+
 }
 
 // Отрисовка списка файлов
 func (a *App) drawFileList() {
 	// Рамка левой панели
 	for y := 0; y < a.height-3; y++ {
-		a.screen.SetContent(a.leftWidth, y, '│', nil, tcell.StyleDefault.Foreground(tcell.ColorGrey))
+		a.screen.SetContent(a.leftWidth, y, '│', nil, tcell.StyleDefault.Foreground(ColorGrey))
 	}
 
 	// Заголовок
@@ -490,7 +542,7 @@ func (a *App) drawFileList() {
 		if col >= a.leftWidth-2 {
 			break
 		}
-		a.screen.SetContent(col+1, 0, r, nil, tcell.StyleDefault.Foreground(tcell.ColorRed).Bold(true))
+		a.screen.SetContent(col+1, 0, r, nil, tcell.StyleDefault.Foreground(ColorRed).Bold(true))
 		col += w
 	}
 
@@ -511,14 +563,14 @@ func (a *App) drawFileList() {
 		// Выделяем текущий элемент
 		style := tcell.StyleDefault
 		if i == a.cursor && a.activePanel == "left" {
-			style = style.Background(tcell.ColorRed).Foreground(tcell.ColorBlack)
+			style = style.Background(ColorRed).Foreground(ColorBlack)
 		}
 
 		// Имя файла
 		name := file.name
 		if file.isDir {
 			name += "/"
-			style = style.Foreground(tcell.ColorBlue)
+			style = style.Foreground(ColorBlue)
 		}
 
 		// Обрезаем имя если слишком длинное (учитываем видимую ширину)
@@ -535,6 +587,7 @@ func (a *App) drawFileList() {
 			col += w
 		}
 	}
+
 }
 
 // Отрисовка редактора
@@ -560,7 +613,7 @@ func (a *App) drawEditor() {
 		if col >= maxTitleCols {
 			break
 		}
-		a.screen.SetContent(a.leftWidth+1+col, 0, r, nil, tcell.StyleDefault.Foreground(tcell.ColorGreen).Bold(true))
+		a.screen.SetContent(a.leftWidth+1+col, 0, r, nil, tcell.StyleDefault.Foreground(ColorGreen).Bold(true))
 		col += w
 	}
 
@@ -570,408 +623,7 @@ func (a *App) drawEditor() {
 	} else {
 		a.drawPreview()
 	}
-}
 
-// Подсветка синтаксиса для Go — построчная версия, сохраняющая состояние между строками
-func (a *App) highlightGoSyntaxLines(lines []string) [][]hlToken {
-	// Ключевые слова Go
-	keywords := map[string]bool{
-		"break": true, "case": true, "chan": true, "const": true, "continue": true,
-		"default": true, "defer": true, "else": true, "fallthrough": true, "for": true,
-		"func": true, "go": true, "goto": true, "if": true, "import": true,
-		"interface": true, "map": true, "package": true, "range": true, "return": true,
-		"select": true, "struct": true, "switch": true, "type": true, "var": true,
-	}
-	types := map[string]bool{
-		"bool": true, "byte": true, "complex64": true, "complex128": true, "error": true,
-		"float32": true, "float64": true, "int": true, "int8": true, "int16": true,
-		"int32": true, "int64": true, "rune": true, "string": true, "uint": true,
-		"uint8": true, "uint16": true, "uint32": true, "uint64": true, "uintptr": true,
-	}
-
-	var result [][]hlToken
-
-	inString := false       // "
-	inRawString := false    // `
-	inMultiComment := false // /* */
-	inEscape := false       // escape inside normal string
-
-	for _, line := range lines {
-		runes := []rune(line)
-		i := 0
-		var row []hlToken
-
-		for i < len(runes) {
-			// Если в многострочном комментарии — ищем конец
-			if inMultiComment {
-				start := i
-				for i < len(runes) {
-					if i+1 < len(runes) && runes[i] == '*' && runes[i+1] == '/' {
-						i += 2
-						inMultiComment = false
-						break
-					}
-					i++
-				}
-				row = append(row, hlToken{string(runes[start:i]), tcell.StyleDefault.Foreground(tcell.ColorGreen)})
-				continue
-			}
-
-			// Если в raw string (backticks)
-			if inRawString {
-				start := i
-				for i < len(runes) {
-					if runes[i] == '`' {
-						i++
-						inRawString = false
-						break
-					}
-					i++
-				}
-				row = append(row, hlToken{string(runes[start:i]), tcell.StyleDefault.Foreground(tcell.ColorYellow)})
-				continue
-			}
-
-			// Если внутри обычной строки "
-			if inString {
-				start := i
-				for i < len(runes) {
-					if runes[i] == '"' && !inEscape {
-						i++
-						inString = false
-						break
-					}
-					if runes[i] == '\\' && !inEscape {
-						inEscape = true
-					} else {
-						inEscape = false
-					}
-					i++
-				}
-				row = append(row, hlToken{string(runes[start:i]), tcell.StyleDefault.Foreground(tcell.ColorYellow)})
-				continue
-			}
-
-			r := runes[i]
-
-			// начало многострочного комментария
-			if i+1 < len(runes) && r == '/' && runes[i+1] == '*' {
-				start := i
-				i += 2
-				inMultiComment = true
-				for i < len(runes) {
-					if i+1 < len(runes) && runes[i] == '*' && runes[i+1] == '/' {
-						i += 2
-						inMultiComment = false
-						break
-					}
-					i++
-				}
-				row = append(row, hlToken{string(runes[start:i]), tcell.StyleDefault.Foreground(tcell.ColorGreen)})
-				continue
-			}
-
-			// однострочный коммент //
-			if i+1 < len(runes) && r == '/' && runes[i+1] == '/' {
-				row = append(row, hlToken{string(runes[i:]), tcell.StyleDefault.Foreground(tcell.ColorGreen)})
-				break
-			}
-
-			// raw string start `
-			if r == '`' {
-				start := i
-				i++
-				inRawString = true
-				for i < len(runes) {
-					if runes[i] == '`' {
-						i++
-						inRawString = false
-						break
-					}
-					i++
-				}
-				row = append(row, hlToken{string(runes[start:i]), tcell.StyleDefault.Foreground(tcell.ColorYellow)})
-				continue
-			}
-
-			// double-quoted string start "
-			if r == '"' {
-				start := i
-				i++
-				inString = true
-				inEscape = false
-				for i < len(runes) {
-					if runes[i] == '"' && !inEscape {
-						i++
-						inString = false
-						break
-					}
-					if runes[i] == '\\' && !inEscape {
-						inEscape = true
-					} else {
-						inEscape = false
-					}
-					i++
-				}
-				row = append(row, hlToken{string(runes[start:i]), tcell.StyleDefault.Foreground(tcell.ColorYellow)})
-				continue
-			}
-
-			// идентификаторы
-			if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || r == '_' {
-				start := i
-				for i < len(runes) && ((runes[i] >= 'a' && runes[i] <= 'z') ||
-					(runes[i] >= 'A' && runes[i] <= 'Z') ||
-					(runes[i] >= '0' && runes[i] <= '9') ||
-					runes[i] == '_') {
-					i++
-				}
-				word := string(runes[start:i])
-				style := tcell.StyleDefault.Foreground(tcell.ColorWhite)
-				if keywords[word] {
-					style = tcell.StyleDefault.Foreground(tcell.ColorBlue).Bold(true)
-				} else if types[word] {
-					style = tcell.StyleDefault.Foreground(tcell.ColorAqua)
-				}
-				row = append(row, hlToken{word, style})
-				continue
-			}
-
-			// числа
-			if r >= '0' && r <= '9' {
-				start := i
-				for i < len(runes) && ((runes[i] >= '0' && runes[i] <= '9') ||
-					runes[i] == '.' || runes[i] == 'e' || runes[i] == 'E' ||
-					runes[i] == '+' || runes[i] == '-') {
-					i++
-				}
-				row = append(row, hlToken{string(runes[start:i]), tcell.StyleDefault.Foreground(tcell.ColorFuchsia)})
-				continue
-			}
-
-			// прочие одиночные символы
-			row = append(row, hlToken{string(r), tcell.StyleDefault.Foreground(tcell.ColorWhite)})
-			i++
-		}
-
-		result = append(result, row)
-	}
-	return result
-}
-
-// Подсветка синтаксиса для одной строки (устаревшая версия, оставлена для совместимости)
-func (a *App) highlightGoSyntax(line string) []struct {
-	text  string
-	style tcell.Style
-} {
-	// Ключевые слова Go
-	keywords := map[string]bool{
-		"break":       true,
-		"case":        true,
-		"chan":        true,
-		"const":       true,
-		"continue":    true,
-		"default":     true,
-		"defer":       true,
-		"else":        true,
-		"fallthrough": true,
-		"for":         true,
-		"func":        true,
-		"go":          true,
-		"goto":        true,
-		"if":          true,
-		"import":      true,
-		"interface":   true,
-		"map":         true,
-		"package":     true,
-		"range":       true,
-		"return":      true,
-		"select":      true,
-		"struct":      true,
-		"switch":      true,
-		"type":        true,
-		"var":         true,
-	}
-
-	// Типы Go
-	types := map[string]bool{
-		"bool":       true,
-		"byte":       true,
-		"complex64":  true,
-		"complex128": true,
-		"error":      true,
-		"float32":    true,
-		"float64":    true,
-		"int":        true,
-		"int8":       true,
-		"int16":      true,
-		"int32":      true,
-		"int64":      true,
-		"rune":       true,
-		"string":     true,
-		"uint":       true,
-		"uint8":      true,
-		"uint16":     true,
-		"uint32":     true,
-		"uint64":     true,
-		"uintptr":    true,
-	}
-
-	var result []struct {
-		text  string
-		style tcell.Style
-	}
-
-	// Простой парсер для подсветки синтаксиса
-	inString := false
-	inSingleLineComment := false
-	inMultiLineComment := false
-	inEscape := false
-
-	runes := []rune(line)
-	i := 0
-
-	for i < len(runes) {
-		r := runes[i]
-
-		// Обработка многострочных комментариев
-		if !inString && !inSingleLineComment && !inMultiLineComment && i+1 < len(runes) && r == '/' && runes[i+1] == '*' {
-			// Начало многострочного комментария
-			start := i
-			i += 2
-			for i < len(runes) {
-				if i+1 < len(runes) && runes[i] == '*' && runes[i+1] == '/' {
-					i += 2
-					break
-				}
-				i++
-			}
-			result = append(result, struct {
-				text  string
-				style tcell.Style
-			}{
-				text:  string(runes[start:i]),
-				style: tcell.StyleDefault.Foreground(tcell.ColorGreen),
-			})
-			continue
-		}
-
-		// Обработка однострочных комментариев
-		if !inString && !inMultiLineComment && i+1 < len(runes) && r == '/' && runes[i+1] == '/' {
-			result = append(result, struct {
-				text  string
-				style tcell.Style
-			}{
-				text:  string(runes[i:]),
-				style: tcell.StyleDefault.Foreground(tcell.ColorGreen),
-			})
-			break
-		}
-
-		// Обработка строк
-		if !inSingleLineComment && !inMultiLineComment && r == '"' && !inEscape {
-			if !inString {
-				// Начало строки
-				start := i
-				inString = true
-				i++
-				for i < len(runes) {
-					if runes[i] == '"' && !inEscape {
-						inString = false
-						i++
-						break
-					}
-					if runes[i] == '\\' && !inEscape {
-						inEscape = true
-					} else {
-						inEscape = false
-					}
-					i++
-				}
-				result = append(result, struct {
-					text  string
-					style tcell.Style
-				}{
-					text:  string(runes[start:i]),
-					style: tcell.StyleDefault.Foreground(tcell.ColorYellow),
-				})
-				continue
-			}
-		}
-
-		// Обработка escape-последовательностей в строках
-		if inString && r == '\\' && !inEscape {
-			inEscape = true
-		} else {
-			inEscape = false
-		}
-
-		// Если мы внутри строки или комментария, просто добавляем символ
-		if inString || inSingleLineComment || inMultiLineComment {
-			i++
-			continue
-		}
-
-		// Обработка идентификаторов (ключевые слова, типы, имена переменных)
-		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || r == '_' {
-			start := i
-			for i < len(runes) && ((runes[i] >= 'a' && runes[i] <= 'z') ||
-				(runes[i] >= 'A' && runes[i] <= 'Z') ||
-				(runes[i] >= '0' && runes[i] <= '9') ||
-				runes[i] == '_') {
-				i++
-			}
-			word := string(runes[start:i])
-
-			// Определяем стиль для слова
-			style := tcell.StyleDefault.Foreground(tcell.ColorWhite)
-			if keywords[word] {
-				style = tcell.StyleDefault.Foreground(tcell.ColorBlue).Bold(true)
-			} else if types[word] {
-				style = tcell.StyleDefault.Foreground(tcell.ColorAqua)
-			}
-
-			result = append(result, struct {
-				text  string
-				style tcell.Style
-			}{
-				text:  word,
-				style: style,
-			})
-			continue
-		}
-
-		// Обработка чисел
-		if r >= '0' && r <= '9' {
-			start := i
-			// Простая обработка целых и вещественных чисел
-			for i < len(runes) && ((runes[i] >= '0' && runes[i] <= '9') ||
-				runes[i] == '.' || runes[i] == 'e' || runes[i] == 'E' ||
-				runes[i] == '+' || runes[i] == '-') {
-				i++
-			}
-			result = append(result, struct {
-				text  string
-				style tcell.Style
-			}{
-				text:  string(runes[start:i]),
-				style: tcell.StyleDefault.Foreground(tcell.ColorFuchsia),
-			})
-			continue
-		}
-
-		// Все остальные символы добавляем как есть
-		result = append(result, struct {
-			text  string
-			style tcell.Style
-		}{
-			text:  string(r),
-			style: tcell.StyleDefault.Foreground(tcell.ColorWhite),
-		})
-		i++
-	}
-
-	return result
 }
 
 // Отрисовка текстового редактора
@@ -992,15 +644,6 @@ func (a *App) drawTextEditor() {
 		editorHeight = 1
 	}
 
-	// Проверяем, является ли файл Go файлом для подсветки синтаксиса
-	isGoFile := a.isGoFile()
-
-	// Предподсветка всего буфера (чтобы сохранить состояния между строками)
-	var highlightedLines [][]hlToken
-	if isGoFile {
-		highlightedLines = a.highlightGoSyntaxLines(lines)
-	}
-
 	for i := 0; i < editorHeight; i++ {
 		lineIdx := a.scrollY + i
 		y := startY + i
@@ -1013,7 +656,7 @@ func (a *App) drawTextEditor() {
 				cursorY := y
 				// Если курсор на пустой строке, но не в первой позиции, нарисуем курсор-пробел
 				if cursorX >= startX && cursorX < startX+editorWidth && cursorY == y {
-					a.screen.SetContent(cursorX, cursorY, ' ', nil, tcell.StyleDefault.Background(tcell.ColorWhite).Foreground(tcell.ColorBlack))
+					a.screen.SetContent(cursorX, cursorY, ' ', nil, tcell.StyleDefault.Background(ColorWhite).Foreground(ColorBlack))
 				}
 			}
 			continue // Продолжаем рисовать "пустые строки" или фон, но не содержимое.
@@ -1021,73 +664,31 @@ func (a *App) drawTextEditor() {
 		line := lines[lineIdx]
 		col := 0
 
-		if isGoFile {
-			// Используем подсветку синтаксиса для Go файлов
-			highlighted := highlightedLines[lineIdx]
-			currentCol := 0
-
-			for _, token := range highlighted {
-				runes := []rune(token.text)
-				for k := 0; k < len(runes); k++ {
-					if currentCol < a.scrollX {
-						currentCol++
-						continue
-					}
-
-					if col >= editorWidth {
-						break
-					}
-
-					r := runes[k]
-					w := runewidth.RuneWidth(r)
-					if col+w > editorWidth {
-						break
-					}
-
-					style := token.style
-
-					// Если это активный курсор, инвертируем цвет текущего символа
-					if a.activePanel == "right" && lineIdx == a.editY && currentCol == a.editX {
-						style = style.Background(tcell.ColorWhite).Foreground(tcell.ColorBlack)
-					}
-
-					// Здесь startX уже содержит textEditorPadding
-					a.screen.SetContent(startX+col, y, r, nil, style)
-					col += w
-					currentCol++
-				}
-
-				if col >= editorWidth {
-					break
-				}
+		// Обычная отрисовка без подсветки синтаксиса (подходящая для Markdown plain-editor)
+		runes := []rune(line)
+		// Итерируем по runes, начиная с rune-индекса scrollX
+		for k := a.scrollX; k < len(runes); k++ {
+			if col >= editorWidth {
+				break
 			}
-		} else {
-			// Обычная отрисовка без подсветки синтаксиса
-			runes := []rune(line)
-			// Итерируем по runes, начиная с rune-индекса scrollX
-			for k := a.scrollX; k < len(runes); k++ {
-				if col >= editorWidth {
-					break
-				}
-				r := runes[k]
-				w := runewidth.RuneWidth(r)
-				if col+w > editorWidth {
-					break
-				}
-				style := tcell.StyleDefault
-
-				// Если это активный курсор, инвертируем цвет текущего символа
-				if a.activePanel == "right" && lineIdx == a.editY && k == a.editX {
-					style = style.Background(tcell.ColorWhite).Foreground(tcell.ColorBlack)
-				}
-				// Здесь startX уже содержит textEditorPadding
-				a.screen.SetContent(startX+col, y, r, nil, style)
-				col += w
+			r := runes[k]
+			w := runewidth.RuneWidth(r)
+			if col+w > editorWidth {
+				break
 			}
+			style := tcell.StyleDefault
+
+			// Если это активный курсор, инвертируем цвет текущего символа
+			if a.activePanel == "right" && lineIdx == a.editY && k == a.editX {
+				style = style.Background(ColorWhite).Foreground(ColorBlack)
+			}
+			// Здесь startX уже содержит textEditorPadding
+			a.screen.SetContent(startX+col, y, r, nil, style)
+			col += w
 		}
 
 		// Если курсор находится в конце строки (после последнего символа)
-		runes := []rune(line)
+		runes = []rune(line)
 		if a.activePanel == "right" && lineIdx == a.editY && a.editX == len(runes) {
 			// Корректируем положение курсора с учетом отступа
 			// вычисляем дисплей-колонку курсора и курсора прокрутки
@@ -1095,7 +696,7 @@ func (a *App) drawTextEditor() {
 			scrollDisp := runesDisplayWidth(runes, a.scrollX)
 			cursorX := startX + (cursorDisp - scrollDisp)
 			if cursorX >= startX && cursorX < startX+editorWidth {
-				a.screen.SetContent(cursorX, y, ' ', nil, tcell.StyleDefault.Background(tcell.ColorWhite).Foreground(tcell.ColorBlack)) // рисуем инвертированный пробел
+				a.screen.SetContent(cursorX, y, ' ', nil, tcell.StyleDefault.Background(ColorWhite).Foreground(ColorBlack)) // рисуем инвертированный пробел
 			}
 		}
 	}
@@ -1129,7 +730,7 @@ func (a *App) drawTextEditor() {
 
 }
 
-// Отрисовка предпросмотра (осталась, но не используется по умолчанию)
+// Отрисовка предпросмотра
 func (a *App) drawPreview() {
 	lines := strings.Split(a.fileContent, "\n")
 	startX := a.leftWidth + 1 + textEditorPadding
@@ -1167,20 +768,20 @@ func (a *App) drawPreview() {
 		}
 
 		// default base style
-		baseStyle := tcell.StyleDefault.Foreground(tcell.ColorWhite)
+		baseStyle := tcell.StyleDefault.Foreground(ColorWhite)
 
 		// decide line-level style and possibly trim prefixes
 		if inCodeBlock {
-			baseStyle = tcell.StyleDefault.Foreground(tcell.ColorYellow).Background(tcell.ColorBlack)
+			baseStyle = tcell.StyleDefault.Foreground(ColorYellow).Background(ColorBlack)
 		} else if strings.HasPrefix(trim, "# ") {
 			trim = strings.TrimPrefix(trim, "# ")
-			baseStyle = tcell.StyleDefault.Foreground(tcell.ColorGreen).Bold(true)
+			baseStyle = tcell.StyleDefault.Foreground(ColorGreen).Bold(true)
 		} else if strings.HasPrefix(trim, "## ") {
 			trim = strings.TrimPrefix(trim, "## ")
-			baseStyle = tcell.StyleDefault.Foreground(tcell.ColorGreen).Bold(true)
+			baseStyle = tcell.StyleDefault.Foreground(ColorGreen).Bold(true)
 		} else if strings.HasPrefix(trim, "### ") {
 			trim = strings.TrimPrefix(trim, "### ")
-			baseStyle = tcell.StyleDefault.Foreground(tcell.ColorOlive).Bold(true)
+			baseStyle = tcell.StyleDefault.Foreground(ColorOlive).Bold(true)
 		} else if strings.HasPrefix(strings.TrimLeft(trim, " "), "> ") {
 			// blockquote, keep indentation
 			// remove one leading '>' if present after spaces
@@ -1188,10 +789,10 @@ func (a *App) drawPreview() {
 			if idx >= 0 {
 				trim = strings.TrimSpace(trim[idx+2:])
 			}
-			baseStyle = tcell.StyleDefault.Foreground(tcell.ColorBlue).Italic(true)
+			baseStyle = tcell.StyleDefault.Foreground(ColorBlue).Italic(true)
 		} else if listRe.MatchString(trim) {
 			// don't strip marker completely; will color marker when rendering
-			baseStyle = tcell.StyleDefault.Foreground(tcell.ColorGray)
+			baseStyle = tcell.StyleDefault.Foreground(ColorGray)
 		}
 
 		// render line rune-by-rune with inline parsing for `code`, *em* and links
@@ -1250,7 +851,7 @@ func (a *App) drawPreview() {
 							if linkCol+w > editorWidth-col {
 								break
 							}
-							linkStyle := baseStyle.Foreground(tcell.ColorLightBlue).Underline(true)
+							linkStyle := baseStyle.Foreground(ColorLightBlue).Underline(true)
 							a.screen.SetContent(startX+col+linkCol, y, lr, nil, linkStyle)
 							linkCol += w
 						}
@@ -1265,7 +866,7 @@ func (a *App) drawPreview() {
 			// choose style for this rune
 			curStyle := baseStyle
 			if inInlineCode {
-				curStyle = tcell.StyleDefault.Foreground(tcell.ColorBlack).Background(tcell.ColorWhite)
+				curStyle = tcell.StyleDefault.Foreground(ColorBlack).Background(ColorWhite)
 			} else if inEmphasis {
 				curStyle = curStyle.Bold(true)
 			}
@@ -1273,7 +874,7 @@ func (a *App) drawPreview() {
 			// special: color list marker differently if at line start
 			// Учитываем смещение при горизонтальной прокрутке
 			if (r == '-' || r == '+' || r == '*') && idx == 0 && listRe.MatchString(string(runes)) {
-				curStyle = tcell.StyleDefault.Foreground(tcell.ColorLightGrey).Bold(true)
+				curStyle = tcell.StyleDefault.Foreground(ColorLightGrey).Bold(true)
 			}
 
 			w := runewidth.RuneWidth(r)
@@ -1292,11 +893,11 @@ func (a *App) drawStatus() {
 	y := a.height - 1
 
 	// Определяем цвет для активной панели
-	panelColor := tcell.ColorGray
+	panelColor := ColorGray
 	if a.activePanel == "left" {
-		panelColor = tcell.ColorBlue
+		panelColor = ColorBlue
 	} else {
-		panelColor = tcell.ColorGreen
+		panelColor = ColorGreen
 	}
 
 	// Формируем статусную строку с фиксированной шириной для панели и режима
@@ -1312,7 +913,7 @@ func (a *App) drawStatus() {
 		if col >= a.width {
 			break
 		}
-		style := tcell.StyleDefault.Foreground(tcell.ColorGray)
+		style := tcell.StyleDefault.Foreground(ColorGray)
 		// Проверяем, находится ли символ в области панели
 		if col >= panelStart && col < panelStart+5 {
 			style = style.Foreground(panelColor).Bold(true)
@@ -1320,17 +921,18 @@ func (a *App) drawStatus() {
 		// Проверяем, находится ли символ в области режима
 		if col >= modeStart && col < modeStart+8 {
 			// Определяем цвет для активного режима
-			color := tcell.ColorGray
+			color := ColorGray
 			if a.mode == "edit" {
-				color = tcell.ColorBlue
+				color = ColorBlue
 			} else {
-				color = tcell.ColorGreen
+				color = ColorGreen
 			}
 			style = style.Foreground(color).Bold(true)
 		}
 		a.screen.SetContent(col, y, r, nil, style)
 		col += w
 	}
+
 }
 
 // Обработка событий клавиатуры
@@ -1417,14 +1019,6 @@ func (a *App) handleKey(ev *tcell.EventKey) {
 		os.Exit(0)
 	case tcell.KeyCtrlS:
 		a.saveFile()
-	case tcell.KeyCtrlF:
-		a.formatWithGofmt()
-	case tcell.KeyCtrlG:
-		a.formatWithGoimports()
-	case tcell.KeyDelete:
-		if a.activePanel == "left" {
-			a.deleteFile()
-		}
 	case tcell.KeyTab:
 		// Переключаем между режимами редактирования и предпросмотра
 		if a.activePanel == "right" {
@@ -1559,12 +1153,17 @@ func (a *App) handleKey(ev *tcell.EventKey) {
 			if a.editX > len(runes) {
 				a.editX = len(runes)
 			}
+
+			// Вставляем символ
 			lines[a.editY] = string(append(append(runes[:a.editX], r), runes[a.editX:]...))
-			a.setLines(lines)
 			a.editX++
+
+			// Для Markdown не выполняем специальные авто-отступы как для Go
+			a.setLines(lines)
 			a.ensureCursorVisible()
 		}
 	}
+
 }
 
 // Основной цикл приложения
@@ -1580,6 +1179,7 @@ func (a *App) Run() {
 			a.screen.Sync()
 		}
 	}
+
 }
 
 func main() {
@@ -1591,4 +1191,5 @@ func main() {
 	defer app.screen.Fini()
 
 	app.Run()
+
 }
