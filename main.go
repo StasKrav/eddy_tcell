@@ -68,11 +68,13 @@ type StyleSpec struct {
 
 // PanelStyle — отдельный тип для панелей, с опциями для выделения
 type PanelStyle struct {
-	FG           string `toml:"fg"`
-	BG           string `toml:"bg"`
-	SelectedFG   string `toml:"selected_fg"`
-	SelectedBG   string `toml:"selected_bg"`
-	SelectedBold bool   `toml:"selected_bold"`
+	FG            string `toml:"fg"`
+	BG            string `toml:"bg"`
+	SelectedFG    string `toml:"selected_fg"`
+	SelectedBG    string `toml:"selected_bg"`
+	SelectedBold  bool   `toml:"selected_bold"`
+	DirFG         string `toml:"dir_fg"`
+	SelectedDirFG string `toml:"selected_dir_fg"`
 }
 
 // UITheme — общие цвета приложения
@@ -233,11 +235,14 @@ type hlToken struct {
 // Получить путь к файлу темы: ~/.config/myapp/theme.toml
 func themePath() string {
 	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
-		// fallback — текущая директория
-		return "./theme.toml"
+	if err == nil && home != "" {
+		userPath := filepath.Join(home, ".config", "myapp", "theme.toml")
+		if _, err := os.Stat(userPath); err == nil {
+			return userPath
+		}
 	}
-	return filepath.Join(home, ".config", "myapp", "theme.toml")
+	// fallback на файл рядом с бинарником
+	return "./theme.toml"
 }
 
 // ---- Парсинг цвета (hex + числа + имена) ----
@@ -246,33 +251,40 @@ func parseColor(s string) tcell.Color {
 	if s == "" {
 		return tcell.ColorDefault
 	}
-	// hex #RRGGBB
+	lower := strings.ToLower(s)
+	if lower == "default" || lower == "terminal" || lower == "none" || lower == "transparent" {
+		return tcell.ColorDefault
+	}
+
+	// hex #RRGGBB или #RGB
 	if strings.HasPrefix(s, "#") {
 		hex := strings.TrimPrefix(s, "#")
-		// поддерживаем 3- и 6-значный формат
 		if len(hex) == 3 {
-			// expand e.g. "abc" -> "aabbcc"
-			expanded := ""
-			for _, ch := range hex {
-				expanded += string(ch) + string(ch)
+			// expand "abc" -> "aabbcc"
+			expanded := make([]byte, 6)
+			for i := 0; i < 3; i++ {
+				expanded[i*2] = hex[i]
+				expanded[i*2+1] = hex[i]
 			}
-			hex = expanded
+			hex = string(expanded)
 		}
 		if len(hex) == 6 {
-			v, err := strconv.ParseInt(hex, 16, 32)
-			if err == nil {
-				return tcell.NewHexColor(int32(v))
+			if v, err := strconv.ParseUint(hex, 16, 32); err == nil {
+				r := int32((v >> 16) & 0xFF)
+				g := int32((v >> 8) & 0xFF)
+				b := int32(v & 0xFF)
+				return tcell.NewRGBColor(r, g, b)
 			}
 		}
 	}
 
-	// числовой (0..255)
+	// числовой код (0..255)
 	if n, err := strconv.Atoi(s); err == nil {
 		return tcell.Color(n)
 	}
 
-	// имена (несколько базовых)
-	switch strings.ToLower(s) {
+	// имена
+	switch lower {
 	case "black":
 		return tcell.ColorBlack
 	case "red":
@@ -338,12 +350,23 @@ func styleFromSpec(spec StyleSpec, ui UITheme) tcell.Style {
 // ---- Загрузка и применение темы ----
 func loadThemeFromFile(path string) (*Theme, error) {
 	var t Theme
-	if _, err := os.Stat(path); os.IsNotExist(err) {
-		return nil, fmt.Errorf("theme not found")
+
+	info, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("theme not found at %s", path)
+		}
+		return nil, fmt.Errorf("cannot access theme file: %v", err)
 	}
+
+	if info.IsDir() {
+		return nil, fmt.Errorf("theme path %s is a directory, not a file", path)
+	}
+
 	if _, err := toml.DecodeFile(path, &t); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to parse theme: %v", err)
 	}
+
 	return &t, nil
 }
 
@@ -361,12 +384,14 @@ func (a *App) applyTheme(t *Theme) {
 // загрузка темы: если нет файла — дефолт
 func (a *App) loadTheme() {
 	path := themePath()
+	fmt.Println("[debug] trying to load theme:", path)
 	t, err := loadThemeFromFile(path)
 	if err != nil {
-		// используем дефолт
+		fmt.Println("[debug] theme load failed:", err)
 		a.applyTheme(&defaultTheme)
 		return
 	}
+	fmt.Println("[debug] theme loaded successfully!")
 	a.applyTheme(t)
 }
 
@@ -967,9 +992,21 @@ func (a *App) drawFileList() {
 		// Имя файла
 		name := file.name
 		if file.isDir {
-			name += "/"
-			// цвет директорий — accent
-			style = style.Foreground(parseColor(theme.UI.Accent))
+			if i == a.cursor && a.activePanel == "left" {
+				// выделенная директория
+				dirFG := theme.UI.LeftPanel.SelectedDirFG
+				if dirFG == "" {
+					dirFG = theme.UI.LeftPanel.SelectedFG
+				}
+				style = style.Foreground(parseColor(dirFG))
+			} else {
+				// обычная директория
+				dirFG := theme.UI.LeftPanel.DirFG
+				if dirFG == "" {
+					dirFG = theme.UI.Accent
+				}
+				style = style.Foreground(parseColor(dirFG))
+			}
 		}
 
 		// Обрезаем имя если слишком длинное (учитываем видимую ширину)

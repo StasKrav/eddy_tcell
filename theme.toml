@@ -1,0 +1,69 @@
+[ui]
+background = "#0f1117"
+foreground = "#c9d1d9"
+accent = "#88d4ab"
+cursor = "#ffcc00"
+selection_bg = "#223244"
+
+[ui.left_panel]
+fg = "#444444"
+bg = "#111217"
+selected_fg = "#111111"
+selected_bg = "#ff0000"
+selected_bold = true
+
+dir_fg = "#58a6ff"
+selected_dir_fg = "#0f1117"
+selected_bg = "#58a6ff"
+
+
+[ui.right_panel]
+fg = "#c9d1d9"
+bg = "#0f1117"
+
+[ui.statusbar]
+fg = "#9aa4b2"
+bg = "#0b1220"
+
+[markdown.h1]
+fg = "#ff7ab6"
+bold = false
+bg = ""
+
+[markdown.h2]
+fg = "#ff9f43"
+bg = ""
+
+[markdown.h3]
+fg = "#ffd166"
+bold = true
+bg = ""
+
+[markdown.inline_code]
+fg = "#111827"
+bg = "#333234"
+
+[markdown.codeblock]
+fg = "#ff9999"
+bg = "#333234"
+
+[markdown.link]
+fg = "#58a6ff"
+underline = true
+
+[markdown.list_marker]
+fg = "#9aa4b2"
+bold = true
+
+[markdown.blockquote]
+fg = "#94a3b8"
+italic = true
+
+[markdown.table.header]
+fg = "#e6edf3"
+
+[markdown.table]
+border = "#3b4252"
+
+[markdown.hr]
+fg = "#3b4252"
