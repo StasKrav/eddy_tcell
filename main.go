@@ -55,6 +55,37 @@ import (
 // …и т.д.
 //
 // Полная схема реализована в типах ниже.
+type BorderStyle struct {
+	FG string `toml:"fg"`
+}
+
+// Заголовки панелей.
+type TitleTheme struct {
+	FG, BG                  string
+	Bold, Italic, Underline bool
+}
+
+type UITitleTheme struct {
+	Background string
+	Foreground string
+	Accent     string
+	Border     BorderStyle
+
+	TitleLeftFiles    TitleTheme
+	TitleRightEditor  TitleTheme
+	TitleRightPreview TitleTheme
+
+	// ...
+}
+
+// Элементы левой панели (file list)
+type FileListTheme struct {
+	FileItem         StyleSpec `toml:"file_item"`
+	FileItemSelected StyleSpec `toml:"file_item_selected"`
+	DirItem          StyleSpec `toml:"dir_item"`
+	DirItemSelected  StyleSpec `toml:"dir_item_selected"`
+	Cursor           StyleSpec `toml:"cursor"`
+}
 
 // StyleSpec описывает стиль для одного элемента
 type StyleSpec struct {
@@ -79,15 +110,25 @@ type PanelStyle struct {
 
 // UITheme — общие цвета приложения
 type UITheme struct {
-	Background  string     `toml:"background"`
-	Foreground  string     `toml:"foreground"`
-	Accent      string     `toml:"accent"`
-	Cursor      string     `toml:"cursor"`
-	SelectionBG string     `toml:"selection_bg"`
-	LeftPanel   PanelStyle `toml:"left_panel"`
-	RightPanel  PanelStyle `toml:"right_panel"`
-	Statusbar   StyleSpec  `toml:"statusbar"`
+	Background  string        `toml:"background"`
+	Foreground  string        `toml:"foreground"`
+	Accent      string        `toml:"accent"`
+	Cursor      string        `toml:"cursor"`
+	SelectionBG string        `toml:"selection_bg"`
+	LeftPanel   PanelStyle    `toml:"left_panel"`
+	RightPanel  PanelStyle    `toml:"right_panel"`
+	Statusbar   StyleSpec     `toml:"statusbar"`
+	FileList    FileListTheme `toml:"file_list"`
 }
+
+// FileListTheme — стили для элементов левой панели (списка файлов)
+// type FileListTheme struct {
+// 	FileItem         StyleSpec `toml:"file_item"`
+// 	FileItemSelected StyleSpec `toml:"file_item_selected"`
+// 	DirItem          StyleSpec `toml:"dir_item"`
+// 	DirItemSelected  StyleSpec `toml:"dir_item_selected"`
+// 	Cursor           StyleSpec `toml:"cursor"`
+// }
 
 // MarkdownTheme — стили Markdown
 type MarkdownTheme struct {
@@ -993,19 +1034,15 @@ func (a *App) drawFileList() {
 		name := file.name
 		if file.isDir {
 			if i == a.cursor && a.activePanel == "left" {
-				// выделенная директория
-				dirFG := theme.UI.LeftPanel.SelectedDirFG
-				if dirFG == "" {
-					dirFG = theme.UI.LeftPanel.SelectedFG
-				}
-				style = style.Foreground(parseColor(dirFG))
+				style = styleFromSpec(theme.UI.FileList.DirItemSelected, theme.UI)
 			} else {
-				// обычная директория
-				dirFG := theme.UI.LeftPanel.DirFG
-				if dirFG == "" {
-					dirFG = theme.UI.Accent
-				}
-				style = style.Foreground(parseColor(dirFG))
+				style = styleFromSpec(theme.UI.FileList.DirItem, theme.UI)
+			}
+		} else {
+			if i == a.cursor && a.activePanel == "left" {
+				style = styleFromSpec(theme.UI.FileList.FileItemSelected, theme.UI)
+			} else {
+				style = styleFromSpec(theme.UI.FileList.FileItem, theme.UI)
 			}
 		}
 
